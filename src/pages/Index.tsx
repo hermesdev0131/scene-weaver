@@ -10,8 +10,9 @@ const Index = () => {
   const [script, setScript] = useState('');
   const [visualStyle, setVisualStyle] = useState('');
   const [prompts, setPrompts] = useState<ScenePrompt[]>([]);
+  const [regeneratingIndex, setRegeneratingIndex] = useState<number | null>(null);
   
-  const { state, apiKeys, saveApiKeys, generatePrompts } = useGeminiApi();
+  const { state, apiKeys, saveApiKeys, generatePrompts, regenerateScene } = useGeminiApi();
 
   const handleGenerate = async () => {
     if (!script.trim() || !visualStyle.trim()) {
@@ -32,6 +33,32 @@ const Index = () => {
       toast.success('All prompts generated successfully!');
     } catch (error) {
       // Error is already handled in the hook
+    }
+  };
+
+  const handleUpdatePrompt = (index: number, updatedPrompt: ScenePrompt) => {
+    setPrompts(prev => {
+      const newPrompts = [...prev];
+      newPrompts[index] = updatedPrompt;
+      return newPrompts;
+    });
+  };
+
+  const handleRegenerateScene = async (index: number) => {
+    if (apiKeys.keys.length === 0) {
+      toast.error('Please configure at least one Gemini API key');
+      return;
+    }
+
+    try {
+      setRegeneratingIndex(index);
+      const newPrompt = await regenerateScene(index, prompts);
+      handleUpdatePrompt(index, newPrompt);
+      toast.success(`Scene ${index + 1} regenerated`);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Failed to regenerate scene');
+    } finally {
+      setRegeneratingIndex(null);
     }
   };
 
@@ -61,7 +88,13 @@ const Index = () => {
           <ApiKeyManager keys={apiKeys.keys} onSave={saveApiKeys} />
         </header>
         
-        <SceneOutput prompts={prompts} />
+        <SceneOutput 
+          prompts={prompts} 
+          onUpdatePrompt={handleUpdatePrompt}
+          onRegenerateScene={handleRegenerateScene}
+          isRegenerating={regeneratingIndex !== null}
+          regeneratingIndex={regeneratingIndex}
+        />
       </main>
     </div>
   );

@@ -1,16 +1,23 @@
 import { useState } from 'react';
 import { ScenePrompt } from '@/types/prompt';
 import { Button } from '@/components/ui/button';
-import { Copy, Check, Download, Film } from 'lucide-react';
+import { Copy, Check, Download, Film, Pencil, RefreshCw } from 'lucide-react';
 import { toast } from 'sonner';
+import { SceneEditDialog } from './SceneEditDialog';
 
 interface SceneOutputProps {
   prompts: ScenePrompt[];
+  onUpdatePrompt: (index: number, prompt: ScenePrompt) => void;
+  onRegenerateScene: (index: number) => void;
+  isRegenerating: boolean;
+  regeneratingIndex: number | null;
 }
 
-export function SceneOutput({ prompts }: SceneOutputProps) {
+export function SceneOutput({ prompts, onUpdatePrompt, onRegenerateScene, isRegenerating, regeneratingIndex }: SceneOutputProps) {
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
   const [copiedType, setCopiedType] = useState<'json' | 'visual' | null>(null);
+  const [editingScene, setEditingScene] = useState<ScenePrompt | null>(null);
+  const [editingIndex, setEditingIndex] = useState<number | null>(null);
 
   const copyToClipboard = async (prompt: ScenePrompt, index: number) => {
     const json = JSON.stringify(prompt);
@@ -50,6 +57,20 @@ export function SceneOutput({ prompts }: SceneOutputProps) {
     a.click();
     URL.revokeObjectURL(url);
     toast.success('Downloaded scene-prompts.json');
+  };
+
+  const handleEdit = (prompt: ScenePrompt, index: number) => {
+    setEditingScene(prompt);
+    setEditingIndex(index);
+  };
+
+  const handleSaveEdit = (updatedScene: ScenePrompt) => {
+    if (editingIndex !== null) {
+      onUpdatePrompt(editingIndex, updatedScene);
+      toast.success(`Scene ${editingIndex + 1} updated`);
+    }
+    setEditingScene(null);
+    setEditingIndex(null);
   };
 
   if (prompts.length === 0) {
@@ -123,6 +144,28 @@ export function SceneOutput({ prompts }: SceneOutputProps) {
                   <Button
                     variant="ghost"
                     size="icon"
+                    onClick={() => handleEdit(prompt, index)}
+                    title="Edit scene"
+                    disabled={isRegenerating}
+                  >
+                    <Pencil className="h-4 w-4" />
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    onClick={() => onRegenerateScene(index)}
+                    title="Regenerate scene"
+                    disabled={isRegenerating}
+                  >
+                    {regeneratingIndex === index ? (
+                      <RefreshCw className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <RefreshCw className="h-4 w-4" />
+                    )}
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="icon"
                     onClick={() => copyVisualDescription(prompt, index)}
                     title="Copy visual description only"
                   >
@@ -150,6 +193,13 @@ export function SceneOutput({ prompts }: SceneOutputProps) {
           ))}
         </div>
       </div>
+
+      <SceneEditDialog
+        scene={editingScene}
+        open={editingScene !== null}
+        onOpenChange={(open) => !open && setEditingScene(null)}
+        onSave={handleSaveEdit}
+      />
     </div>
   );
 }
