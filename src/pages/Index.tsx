@@ -2,8 +2,9 @@ import { useState } from 'react';
 import { Sidebar } from '@/components/Sidebar';
 import { SceneOutput } from '@/components/SceneOutput';
 import { ApiKeyManager } from '@/components/ApiKeyManager';
+import { CharacterPanel } from '@/components/CharacterPanel';
 import { useGeminiApi } from '@/hooks/useGeminiApi';
-import { ScenePrompt } from '@/types/prompt';
+import { ScenePrompt, Character } from '@/types/prompt';
 import { toast } from 'sonner';
 
 const Index = () => {
@@ -11,8 +12,10 @@ const Index = () => {
   const [visualStyle, setVisualStyle] = useState('');
   const [prompts, setPrompts] = useState<ScenePrompt[]>([]);
   const [regeneratingIndex, setRegeneratingIndex] = useState<number | null>(null);
+  const [characters, setCharacters] = useState<Character[]>([]);
+  const [era, setEra] = useState<string | null>(null);
   
-  const { state, apiKeys, saveApiKeys, generatePrompts, regenerateScene } = useGeminiApi();
+  const { state, apiKeys, saveApiKeys, generatePrompts, regenerateScene, lastAnalysis } = useGeminiApi();
 
   const handleGenerate = async () => {
     if (!script.trim() || !visualStyle.trim()) {
@@ -27,9 +30,16 @@ const Index = () => {
 
     try {
       setPrompts([]);
+      setCharacters([]);
+      setEra(null);
       await generatePrompts(script, visualStyle, (updatedPrompts) => {
         setPrompts(updatedPrompts);
       });
+      // Update characters and era after generation
+      if (lastAnalysis) {
+        setCharacters(lastAnalysis.characters);
+        setEra(lastAnalysis.era);
+      }
       toast.success('All prompts generated successfully!');
     } catch (error) {
       // Error is already handled in the hook
@@ -87,14 +97,22 @@ const Index = () => {
           </div>
           <ApiKeyManager keys={apiKeys.keys} onSave={saveApiKeys} />
         </header>
-        
-        <SceneOutput 
-          prompts={prompts} 
-          onUpdatePrompt={handleUpdatePrompt}
-          onRegenerateScene={handleRegenerateScene}
-          isRegenerating={regeneratingIndex !== null}
-          regeneratingIndex={regeneratingIndex}
-        />
+
+        <div className="flex flex-1 overflow-hidden">
+          {characters.length > 0 && (
+            <div className="w-64 border-r border-border overflow-y-auto">
+              <CharacterPanel characters={characters} era={era} />
+            </div>
+          )}
+          
+          <SceneOutput 
+            prompts={prompts} 
+            onUpdatePrompt={handleUpdatePrompt}
+            onRegenerateScene={handleRegenerateScene}
+            isRegenerating={regeneratingIndex !== null}
+            regeneratingIndex={regeneratingIndex}
+          />
+        </div>
       </main>
     </div>
   );
