@@ -10,13 +10,23 @@ interface SceneOutputProps {
 
 export function SceneOutput({ prompts }: SceneOutputProps) {
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
+  const [copiedType, setCopiedType] = useState<'json' | 'visual' | null>(null);
 
   const copyToClipboard = async (prompt: ScenePrompt, index: number) => {
     const json = JSON.stringify(prompt);
     await navigator.clipboard.writeText(json);
     setCopiedIndex(index);
-    toast.success(`Scene ${index + 1} copied to clipboard`);
-    setTimeout(() => setCopiedIndex(null), 2000);
+    setCopiedType('json');
+    toast.success(`Scene ${index + 1} JSON copied`);
+    setTimeout(() => { setCopiedIndex(null); setCopiedType(null); }, 2000);
+  };
+
+  const copyVisualDescription = async (prompt: ScenePrompt, index: number) => {
+    await navigator.clipboard.writeText(prompt.visualDescription);
+    setCopiedIndex(index);
+    setCopiedType('visual');
+    toast.success(`Scene ${index + 1} visual description copied`);
+    setTimeout(() => { setCopiedIndex(null); setCopiedType(null); }, 2000);
   };
 
   const copyAllForExcel = async () => {
@@ -99,18 +109,32 @@ export function SceneOutput({ prompts }: SceneOutputProps) {
                     </code>
                   </div>
                 </div>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  onClick={() => copyToClipboard(prompt, index)}
-                  className="opacity-0 group-hover:opacity-100 transition-opacity"
-                >
-                  {copiedIndex === index ? (
-                    <Check className="h-4 w-4 text-green-500" />
-                  ) : (
-                    <Copy className="h-4 w-4" />
-                  )}
-                </Button>
+                <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    onClick={() => copyVisualDescription(prompt, index)}
+                    title="Copy visual description only"
+                  >
+                    {copiedIndex === index && copiedType === 'visual' ? (
+                      <Check className="h-4 w-4 text-green-500" />
+                    ) : (
+                      <Film className="h-4 w-4" />
+                    )}
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    onClick={() => copyToClipboard(prompt, index)}
+                    title="Copy full JSON"
+                  >
+                    {copiedIndex === index && copiedType === 'json' ? (
+                      <Check className="h-4 w-4 text-green-500" />
+                    ) : (
+                      <Copy className="h-4 w-4" />
+                    )}
+                  </Button>
+                </div>
               </div>
             </div>
           ))}
