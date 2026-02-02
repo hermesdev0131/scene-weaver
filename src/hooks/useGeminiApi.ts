@@ -1,11 +1,17 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useRef } from 'react';
 import { Character, ScenePrompt, GenerationState, ApiKeyConfig } from '@/types/prompt';
 
 const GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent';
 
-const WORDS_PER_SECOND = 2.5; // Average narration speed
-const SCENE_DURATION = 8; // seconds
+const WORDS_PER_SECOND = 2.5;
+const SCENE_DURATION = 8;
 const WORDS_PER_SCENE = WORDS_PER_SECOND * SCENE_DURATION;
+
+interface ScriptAnalysis {
+  characters: Character[];
+  era: string;
+  scenes: string[];
+}
 
 export function useGeminiApi() {
   const [state, setState] = useState<GenerationState>({
@@ -19,6 +25,10 @@ export function useGeminiApi() {
     const stored = localStorage.getItem('gemini_api_keys');
     return stored ? JSON.parse(stored) : { keys: [], currentIndex: 0 };
   });
+
+  // Store last analysis for regeneration
+  const lastAnalysisRef = useRef<ScriptAnalysis | null>(null);
+  const lastVisualStyleRef = useRef<string>('');
 
   const saveApiKeys = useCallback((keys: string[]) => {
     const config = { keys, currentIndex: 0 };
@@ -160,6 +170,8 @@ Return ONLY the JSON, no additional text.`;
     try {
       // Step 1: Analyze script
       const analysis = await analyzeScript(script);
+      lastAnalysisRef.current = analysis;
+      lastVisualStyleRef.current = visualStyle;
       setState(prev => ({ ...prev, totalScenes: analysis.scenes.length }));
 
       // Step 2: Generate prompts one by one
@@ -190,10 +202,46 @@ Return ONLY the JSON, no additional text.`;
     }
   }, [analyzeScript, generateScenePrompt]);
 
+  const regenerateScene = useCallback(async (
+    sceneIndex: number,
+    currentPrompts: ScenePrompt[]
+  ): Promise<ScenePrompt> => {
+    if (!lastAnalysisRef.current) {
+      throw new Error('No previous analysis available. Please generate all prompts first.');
+    }
+
+    const analysis = lastAnalysisRef.current;
+    const visualStyle = lastVisualStyleRef.current;
+
+    if (sceneIndex < 0 || sceneIndex >= analysis.scenes.length) {
+      throw new Error('Invalid scene index');
+    }
+
+    setState(prev => ({ ...prev, isGenerating: true, currentScene: sceneIndex + 1, totalScenes: currentPrompts.length }));
+
+    try {
+      const newPrompt = await generateScenePrompt(
+        analysis.scenes[sceneIndex],
+        sceneIndex + 1,
+        analysis.characters,
+        analysis.era,
+        visualStyle
+      );
+
+      setState({ isGenerating: false, currentScene: 0, totalScenes: 0, error: null });
+      return newPrompt;
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : 'Regeneration failed';
+      setState(prev => ({ ...prev, isGenerating: false, error: errorMessage }));
+      throw err;
+    }
+  }, [generateScenePrompt]);
+
   return {
     state,
     apiKeys,
     saveApiKeys,
     generatePrompts,
+    regenerateScene,
   };
 }
