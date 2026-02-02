@@ -243,5 +243,6 @@ Return ONLY the JSON, no additional text.`;
     saveApiKeys,
     generatePrompts,
     regenerateScene,
+    lastAnalysis: lastAnalysisRef.current,
   };
 }
