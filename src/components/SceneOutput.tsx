@@ -35,6 +35,12 @@ export function SceneOutput({ prompts }: SceneOutputProps) {
     toast.success('All prompts copied (one per line for Excel)');
   };
 
+  const copyAllVisualDescriptions = async () => {
+    const descriptions = prompts.map((p, i) => `Scene ${i + 1}: ${p.visualDescription}`);
+    await navigator.clipboard.writeText(descriptions.join('\n\n'));
+    toast.success('All visual descriptions copied');
+  };
+
   const downloadAsJson = () => {
     const blob = new Blob([JSON.stringify(prompts, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
@@ -70,6 +76,10 @@ export function SceneOutput({ prompts }: SceneOutputProps) {
           <p className="text-sm text-muted-foreground">{prompts.length} scenes • Ready for export</p>
         </div>
         <div className="flex gap-2">
+          <Button variant="outline" size="sm" onClick={copyAllVisualDescriptions}>
+            <Film className="h-4 w-4 mr-2" />
+            Copy Visuals
+          </Button>
           <Button variant="outline" size="sm" onClick={copyAllForExcel}>
             <Copy className="h-4 w-4 mr-2" />
             Copy All (Excel)
