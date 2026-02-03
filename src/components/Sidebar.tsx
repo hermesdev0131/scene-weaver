@@ -58,15 +58,20 @@ export function Sidebar({
 
         <div className="space-y-2">
           <Label htmlFor="style" className="text-sidebar-foreground">
-            Visual Style
+            Visual Style Directive
           </Label>
-          <Input
+          <Textarea
             id="style"
-            placeholder="e.g., Cinematic, dark fantasy, oil painting..."
+            placeholder="Describe the visual style in detail. Include art style, color palette (with hex codes), mood, lighting, texture details, character design notes, etc.
+
+Example: Hand-drawn illustration style, historical epic feel, with strong outlines and highly detailed character design. Dynamic composition with expressive faces, emphasizing grim and determined moods. Textured clothing and beards. Earthy color palette (#E4C99D, #8C4524, #C6382D, #4A4A4A, #6F8B9C, #D7AA6F) for a somber, gritty tone."
             value={visualStyle}
             onChange={(e) => onVisualStyleChange(e.target.value)}
-            className="bg-sidebar-accent border-sidebar-border text-sidebar-foreground placeholder:text-muted-foreground"
+            className="min-h-[100px] bg-sidebar-accent border-sidebar-border text-sidebar-foreground placeholder:text-muted-foreground resize-none text-xs"
           />
+          <p className="text-xs text-muted-foreground">
+            This will be locked and applied identically to every scene.
+          </p>
         </div>
       </div>
 
@@ -75,14 +80,20 @@ export function Sidebar({
           <div className="bg-primary/10 rounded-lg p-3">
             <div className="flex items-center gap-2 text-sm text-primary">
               <Loader2 className="h-4 w-4 animate-spin" />
-              Processing scene {state.currentScene} of {state.totalScenes}
+              {state.phase === 'analyzing' ? (
+                'Analyzing script & extracting characters...'
+              ) : (
+                `Generating scene ${state.currentScene} of ${state.totalScenes}`
+              )}
             </div>
-            <div className="mt-2 h-1.5 bg-sidebar-accent rounded-full overflow-hidden">
-              <div 
-                className="h-full bg-primary transition-all duration-300"
-                style={{ width: `${(state.currentScene / state.totalScenes) * 100}%` }}
-              />
-            </div>
+            {state.phase === 'generating' && state.totalScenes > 0 && (
+              <div className="mt-2 h-1.5 bg-sidebar-accent rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-primary transition-all duration-300"
+                  style={{ width: `${(state.currentScene / state.totalScenes) * 100}%` }}
+                />
+              </div>
+            )}
           </div>
         )}
 
