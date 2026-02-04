@@ -45,6 +45,16 @@ export function Sidebar({
   const wordsPerScene = sceneDuration * 3;
   const estimatedScenes = Math.max(1, Math.ceil(wordCount / wordsPerScene));
 
+  // Estimate generation time
+  const CHUNK_SIZE = 250;
+  const estimatedChunks = Math.max(1, Math.ceil(wordCount / CHUNK_SIZE));
+  // Phase 1: Character extraction (~10s) + Scene extraction (~6s per chunk)
+  const phase1Time = 10 + (estimatedChunks * 6);
+  // Phase 2: Scene prompt generation (~5s per scene)
+  const phase2Time = estimatedScenes * 5;
+  const totalTimeSeconds = phase1Time + phase2Time;
+  const estimatedMinutes = Math.ceil(totalTimeSeconds / 60);
+
   return (
     <aside className="w-80 min-w-80 bg-sidebar border-r border-sidebar-border flex flex-col h-full">
       <div className="p-4 border-b border-sidebar-border">
@@ -70,7 +80,7 @@ export function Sidebar({
             className="min-h-[300px] bg-sidebar-accent border-sidebar-border text-sidebar-foreground placeholder:text-muted-foreground resize-none"
           />
           <p className="text-xs text-muted-foreground">
-            {wordCount} words • ~{estimatedScenes} estimated scenes
+            {wordCount} words • ~{estimatedScenes} scenes • ~{estimatedMinutes} min
           </p>
         </div>
 

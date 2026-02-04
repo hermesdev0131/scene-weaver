@@ -277,7 +277,9 @@ RULES:
     }
 
     // STEP 2: Extract scenes with ACTION focus (CHUNKED for long scripts)
-    const CHUNK_SIZE = 1500; // words per chunk
+    // With short scene durations (4s) and free tier API limits,
+    // keep chunks very small to avoid JSON truncation
+    const CHUNK_SIZE = 250; // words per chunk (small for free tier)
     const words = script.split(/\s+/);
     const totalWords = words.length;
     const characterIds = Object.keys(charData.characters).join(', ');
@@ -353,10 +355,11 @@ RULES:
 
       console.log(`Split into ${chunks.length} chunks`);
 
-      // Process each chunk
+      // Process each chunk with retry logic
       for (let i = 0; i < chunks.length; i++) {
         const chunk = chunks[i];
-        console.log(`Processing chunk ${i + 1}/${chunks.length} (${chunk.split(/\s+/).length} words)`);
+        const chunkWordCount = chunk.split(/\s+/).length;
+        console.log(`Processing chunk ${i + 1}/${chunks.length} (${chunkWordCount} words)`);
 
         const chunkPrompt = `Divide this PART ${i + 1} of ${chunks.length} of a script into ACTION-focused scenes of ~${wordsPerScene} words each (${sceneDuration} seconds).
 
@@ -382,30 +385,46 @@ RULES:
 - action_hint should describe what characters DO, not what they SAY
 - Return ONLY valid JSON`;
 
-        const chunkResponse = await callGemini(chunkPrompt, false, 16384);
+        // Retry logic for failed chunks (1 retry = 2 total attempts)
+        const MAX_RETRIES = 2;
+        let lastError: Error | null = null;
 
-        let chunkJsonStr = chunkResponse;
-        const chunkCodeBlock = chunkResponse.match(/```(?:json)?\s*([\s\S]*?)```/);
-        if (chunkCodeBlock) chunkJsonStr = chunkCodeBlock[1].trim();
-        const chunkMatch = chunkJsonStr.match(/\{[\s\S]*\}/);
+        for (let retry = 0; retry < MAX_RETRIES; retry++) {
+          try {
+            const chunkResponse = await callGemini(chunkPrompt, false, 32768);
 
-        if (!chunkMatch) {
-          console.error(`Failed to extract scenes from chunk ${i + 1}`);
-          throw new Error(`Failed to extract scenes from chunk ${i + 1}`);
+            let chunkJsonStr = chunkResponse;
+            const chunkCodeBlock = chunkResponse.match(/```(?:json)?\s*([\s\S]*?)```/);
+            if (chunkCodeBlock) chunkJsonStr = chunkCodeBlock[1].trim();
+            const chunkMatch = chunkJsonStr.match(/\{[\s\S]*\}/);
+
+            if (!chunkMatch) {
+              throw new Error(`Failed to extract JSON from chunk ${i + 1}`);
+            }
+
+            const chunkData = JSON.parse(chunkMatch[0]);
+            allScenes = allScenes.concat(chunkData.scenes);
+            console.log(`Chunk ${i + 1}: ${chunkData.scenes.length} scenes extracted`);
+            lastError = null;
+            break; // Success, exit retry loop
+          } catch (e) {
+            lastError = e instanceof Error ? e : new Error(String(e));
+            console.error(`Chunk ${i + 1} attempt ${retry + 1} failed:`, lastError.message);
+
+            if (retry < MAX_RETRIES - 1) {
+              console.log(`Retrying chunk ${i + 1} in 3 seconds...`);
+              await new Promise(resolve => setTimeout(resolve, 3000));
+            }
+          }
         }
 
-        try {
-          const chunkData = JSON.parse(chunkMatch[0]);
-          allScenes = allScenes.concat(chunkData.scenes);
-          console.log(`Chunk ${i + 1}: ${chunkData.scenes.length} scenes extracted`);
-        } catch (e) {
-          console.error(`Chunk ${i + 1} JSON parse error:`, e);
-          throw new Error(`Failed to parse scene data from chunk ${i + 1}`);
+        if (lastError) {
+          throw new Error(`Failed to parse scene data from chunk ${i + 1} after ${MAX_RETRIES} attempts`);
         }
 
-        // Small delay between chunks to avoid rate limiting
+        // Delay between chunks to avoid rate limiting (longer for free tier)
         if (i < chunks.length - 1) {
-          await new Promise(resolve => setTimeout(resolve, 2000));
+          await new Promise(resolve => setTimeout(resolve, 3000));
         }
       }
 
