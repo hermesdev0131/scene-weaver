@@ -276,8 +276,17 @@ RULES:
       throw new Error('Failed to parse character data');
     }
 
-    // STEP 2: Extract scenes with ACTION focus
-    const scenePrompt = `Divide this script into ACTION-focused scenes of ~${wordsPerScene} words each (${sceneDuration} seconds).
+    // STEP 2: Extract scenes with ACTION focus (CHUNKED for long scripts)
+    const CHUNK_SIZE = 1500; // words per chunk
+    const words = script.split(/\s+/);
+    const totalWords = words.length;
+    const characterIds = Object.keys(charData.characters).join(', ');
+
+    let allScenes: SceneSegment[] = [];
+
+    if (totalWords <= CHUNK_SIZE * 1.5) {
+      // Short script - process in one call
+      const scenePrompt = `Divide this script into ACTION-focused scenes of ~${wordsPerScene} words each (${sceneDuration} seconds).
 
 SCRIPT: ${script}
 
@@ -293,35 +302,121 @@ Return JSON with scenes focused on PHYSICAL ACTIONS, not dialogue:
   ]
 }
 
-Character IDs available: ${Object.keys(charData.characters).join(', ')}
+Character IDs available: ${characterIds}
 
 RULES:
 - Each scene should have a clear PHYSICAL ACTION (not just dialogue/talking)
 - action_hint should describe what characters DO, not what they SAY
 - Return ONLY valid JSON`;
 
-    const sceneResponse = await callGemini(scenePrompt, false, 32768);
-    console.log('Scene response:', sceneResponse.substring(0, 500));
+      const sceneResponse = await callGemini(scenePrompt, false, 32768);
+      console.log('Scene response:', sceneResponse.substring(0, 500));
 
-    let sceneJsonStr = sceneResponse;
-    const sceneCodeBlock = sceneResponse.match(/```(?:json)?\s*([\s\S]*?)```/);
-    if (sceneCodeBlock) sceneJsonStr = sceneCodeBlock[1].trim();
-    const sceneMatch = sceneJsonStr.match(/\{[\s\S]*\}/);
-    if (!sceneMatch) throw new Error('Failed to extract scenes');
+      let sceneJsonStr = sceneResponse;
+      const sceneCodeBlock = sceneResponse.match(/```(?:json)?\s*([\s\S]*?)```/);
+      if (sceneCodeBlock) sceneJsonStr = sceneCodeBlock[1].trim();
+      const sceneMatch = sceneJsonStr.match(/\{[\s\S]*\}/);
+      if (!sceneMatch) throw new Error('Failed to extract scenes');
 
-    let sceneData: { scenes: SceneSegment[] };
-    try {
-      sceneData = JSON.parse(sceneMatch[0]);
-    } catch (e) {
-      console.error('Scene JSON parse error:', e, sceneMatch[0]);
-      throw new Error('Failed to parse scene data');
+      try {
+        const sceneData = JSON.parse(sceneMatch[0]);
+        allScenes = sceneData.scenes;
+      } catch (e) {
+        console.error('Scene JSON parse error:', e, sceneMatch[0]);
+        throw new Error('Failed to parse scene data');
+      }
+    } else {
+      // Long script - process in chunks
+      console.log(`Long script detected (${totalWords} words). Processing in chunks...`);
+
+      const chunks: string[] = [];
+      let currentChunk: string[] = [];
+      let currentWordCount = 0;
+
+      // Split by sentences to avoid cutting mid-sentence
+      const sentences = script.split(/(?<=[.!?])\s+/);
+
+      for (const sentence of sentences) {
+        const sentenceWords = sentence.split(/\s+/).length;
+        if (currentWordCount + sentenceWords > CHUNK_SIZE && currentChunk.length > 0) {
+          chunks.push(currentChunk.join(' '));
+          currentChunk = [sentence];
+          currentWordCount = sentenceWords;
+        } else {
+          currentChunk.push(sentence);
+          currentWordCount += sentenceWords;
+        }
+      }
+      if (currentChunk.length > 0) {
+        chunks.push(currentChunk.join(' '));
+      }
+
+      console.log(`Split into ${chunks.length} chunks`);
+
+      // Process each chunk
+      for (let i = 0; i < chunks.length; i++) {
+        const chunk = chunks[i];
+        console.log(`Processing chunk ${i + 1}/${chunks.length} (${chunk.split(/\s+/).length} words)`);
+
+        const chunkPrompt = `Divide this PART ${i + 1} of ${chunks.length} of a script into ACTION-focused scenes of ~${wordsPerScene} words each (${sceneDuration} seconds).
+
+SCRIPT PART ${i + 1}/${chunks.length}:
+${chunk}
+
+Return JSON with scenes focused on PHYSICAL ACTIONS, not dialogue:
+{
+  "scenes": [
+    {
+      "text": "Exact narration text from this part",
+      "duration_sec": ${sceneDuration},
+      "characters_present": ["CHAR_A", "CHAR_B"],
+      "action_hint": "Brief description of the main PHYSICAL ACTION in this scene"
+    }
+  ]
+}
+
+Character IDs available: ${characterIds}
+
+RULES:
+- Each scene should have a clear PHYSICAL ACTION (not just dialogue/talking)
+- action_hint should describe what characters DO, not what they SAY
+- Return ONLY valid JSON`;
+
+        const chunkResponse = await callGemini(chunkPrompt, false, 16384);
+
+        let chunkJsonStr = chunkResponse;
+        const chunkCodeBlock = chunkResponse.match(/```(?:json)?\s*([\s\S]*?)```/);
+        if (chunkCodeBlock) chunkJsonStr = chunkCodeBlock[1].trim();
+        const chunkMatch = chunkJsonStr.match(/\{[\s\S]*\}/);
+
+        if (!chunkMatch) {
+          console.error(`Failed to extract scenes from chunk ${i + 1}`);
+          throw new Error(`Failed to extract scenes from chunk ${i + 1}`);
+        }
+
+        try {
+          const chunkData = JSON.parse(chunkMatch[0]);
+          allScenes = allScenes.concat(chunkData.scenes);
+          console.log(`Chunk ${i + 1}: ${chunkData.scenes.length} scenes extracted`);
+        } catch (e) {
+          console.error(`Chunk ${i + 1} JSON parse error:`, e);
+          throw new Error(`Failed to parse scene data from chunk ${i + 1}`);
+        }
+
+        // Small delay between chunks to avoid rate limiting
+        if (i < chunks.length - 1) {
+          await new Promise(resolve => setTimeout(resolve, 2000));
+        }
+      }
+
+      console.log(`Total scenes from all chunks: ${allScenes.length}`);
     }
 
     const analysis: StoryAnalysis = {
       characters: charData.characters,
       era: charData.era,
       visual_style_lock: visualStyle,
-      scenes: sceneData.scenes.map(s => ({
+      scenes: allScenes.map(s => ({
         ...s,
         action_hint: s.action_hint || ''
       }))
