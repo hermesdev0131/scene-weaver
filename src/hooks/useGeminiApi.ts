@@ -220,16 +220,58 @@ export function useGeminiApi() {
   ): Promise<StoryAnalysis> => {
     const wordsPerScene = Math.round(WORDS_PER_SECOND * sceneDuration);
 
-    // STEP 1: IDENTIFY characters and CREATE detailed visual descriptions
-    const charPrompt = `You are a character designer for AI video generation. Identify ALL characters from this script, then INVENT detailed visual descriptions for each.
+    // STEP 1A: IDENTIFY character NAMES from full script (lightweight pass)
+    const namePrompt = `Identify ALL characters mentioned in this script. List every named character, even if they appear only briefly or are mentioned late in the story.
 
-SCRIPT: ${script.substring(0, 3000)}
+SCRIPT: ${script}
 
-YOUR TASK:
-1. Identify every character mentioned in the script
-2. For each character, CREATE a complete, specific visual appearance
-3. Base your designs on: the era/setting, character's role, name origin, cultural context
-4. Every field MUST have a concrete, specific visual description
+Return JSON with this EXACT structure:
+{
+  "characters": [
+    {"name": "Character Name", "role": "brief role description", "importance": "main/supporting/minor"}
+  ],
+  "era": "Historical period and setting"
+}
+
+RULES:
+- Include EVERY named character, even those appearing only once
+- Order by importance (main characters first)
+- "importance" should be: "main" for protagonists/antagonists, "supporting" for recurring characters, "minor" for brief appearances
+- Return ONLY valid JSON`;
+
+    console.log('Phase 1: Extracting character names...');
+    const nameResponse = await callGemini(namePrompt, false, 4096);
+    console.log('Name extraction response:', nameResponse.substring(0, 500));
+
+    let nameJsonStr = nameResponse;
+    const nameCodeBlock = nameResponse.match(/```(?:json)?\s*([\s\S]*?)```/);
+    if (nameCodeBlock) nameJsonStr = nameCodeBlock[1].trim();
+    const nameMatch = nameJsonStr.match(/\{[\s\S]*\}/);
+    if (!nameMatch) throw new Error('Failed to extract character names');
+
+    let nameData: { characters: Array<{ name: string; role: string; importance: string }>; era: string };
+    try {
+      nameData = JSON.parse(nameMatch[0]);
+    } catch (e) {
+      console.error('Name JSON parse error:', e, nameMatch[0]);
+      throw new Error('Failed to parse character names');
+    }
+
+    console.log(`Found ${nameData.characters.length} characters:`, nameData.characters.map(c => c.name).join(', '));
+
+    // STEP 1B: CREATE detailed visual descriptions for identified characters
+    const characterList = nameData.characters.map((c, i) => `${i + 1}. ${c.name} (${c.role}) - ${c.importance}`).join('\n');
+
+    const charPrompt = `You are a character designer for AI video generation. Create detailed visual descriptions for these characters from the script.
+
+ERA/SETTING: ${nameData.era}
+
+CHARACTERS TO DESIGN:
+${characterList}
+
+SCRIPT CONTEXT: ${script.substring(0, 8000)}
+
+Create a complete visual appearance for EACH character listed above. Base your designs on the era/setting, character's role, name origin, and cultural context.
 
 Return JSON with this EXACT structure:
 {
@@ -255,28 +297,28 @@ Return JSON with this EXACT structure:
       "material_reference": "Bronze, leather, wool, gold accents"
     }
   },
-  "era": "Ancient Greece, 5th century BC, Sicilian city-state"
+  "era": "${nameData.era}"
 }
 
 MANDATORY RULES:
-- CHAR_A = protagonist/main character
-- CHAR_B, CHAR_C, etc = other characters in order of importance
+- Create an entry for EACH character in the list above (${nameData.characters.length} total)
+- CHAR_A = first/most important character, CHAR_B = second, etc.
 - NEVER write "not specified", "not mentioned", "unknown", or "implied"
-- NEVER include explanations like "As a general, he would likely..."
-- Every field MUST contain a direct visual description, not commentary
+- Every field MUST contain a direct visual description
 - INVENT appropriate details based on era, role, and cultural context
 - Be SPECIFIC: colors, materials, textures, exact visual details
 - NO voice or dialogue fields
 - Return ONLY valid JSON`;
 
+    console.log('Phase 2: Generating visual descriptions...');
     const charResponse = await callGemini(charPrompt, false, 16384);
-    console.log('Character response:', charResponse.substring(0, 500));
+    console.log('Character description response:', charResponse.substring(0, 500));
 
     let charJsonStr = charResponse;
     const charCodeBlock = charResponse.match(/```(?:json)?\s*([\s\S]*?)```/);
     if (charCodeBlock) charJsonStr = charCodeBlock[1].trim();
     const charMatch = charJsonStr.match(/\{[\s\S]*\}/);
-    if (!charMatch) throw new Error('Failed to extract characters');
+    if (!charMatch) throw new Error('Failed to extract character descriptions');
 
     let charData: { characters: Record<string, CharacterIdentity>; era: string };
     try {
@@ -285,6 +327,8 @@ MANDATORY RULES:
       console.error('Character JSON parse error:', e, charMatch[0]);
       throw new Error('Failed to parse character data');
     }
+
+    console.log(`Generated descriptions for ${Object.keys(charData.characters).length} characters`);
 
     // STEP 2: Extract scenes with ACTION focus (CHUNKED for long scripts)
     // With short scene durations (4s) and free tier API limits,
@@ -547,7 +591,7 @@ MANDATORY RULES:
 6. The scene should have MOTION that can be animated
 7. Return ONLY valid JSON`;
 
-    const response = await callGemini(scenePrompt, false, 4096);
+    const response = await callGemini(scenePrompt, false, 8192);
 
     const jsonMatch = response.match(/\{[\s\S]*\}/);
     if (!jsonMatch) {
