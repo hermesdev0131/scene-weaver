@@ -220,42 +220,52 @@ export function useGeminiApi() {
   ): Promise<StoryAnalysis> => {
     const wordsPerScene = Math.round(WORDS_PER_SECOND * sceneDuration);
 
-    // STEP 1: Extract DETAILED characters (NO voice/dialogue fields)
-    const charPrompt = `Extract ALL characters from this script with DETAILED physical descriptions for visual consistency.
+    // STEP 1: IDENTIFY characters and CREATE detailed visual descriptions
+    const charPrompt = `You are a character designer for AI video generation. Identify ALL characters from this script, then INVENT detailed visual descriptions for each.
 
 SCRIPT: ${script.substring(0, 3000)}
 
-Return JSON with this EXACT structure for each character:
+YOUR TASK:
+1. Identify every character mentioned in the script
+2. For each character, CREATE a complete, specific visual appearance
+3. Base your designs on: the era/setting, character's role, name origin, cultural context
+4. Every field MUST have a concrete, specific visual description
+
+Return JSON with this EXACT structure:
 {
   "characters": {
     "CHAR_A": {
-      "name": "Full character name",
-      "species": "Human/Elf/etc",
-      "gender": "Male/Female/Other",
-      "age": "Specific age range (e.g., 'Mid-30s', 'Early 20s', 'Late 50s')",
-      "body_build": "Detailed body description (e.g., 'Slender, agile, deceptively strong')",
-      "face_shape": "Detailed face description (e.g., 'Oval, sharp features, intelligent eyes')",
-      "hair": "Detailed hair description with color, length, style (e.g., 'Long, dark brown, usually tied back severely')",
-      "facial_hair": "Beard/mustache details or 'None'",
-      "skin_or_fur_color": "Detailed skin tone (e.g., 'Olive-toned, sun-kissed')",
-      "eye_color": "Detailed eye description (e.g., 'Alert, hazel eyes that miss nothing')",
-      "signature_feature": "Distinctive identifying feature (e.g., 'A silver pendant shaped like a crescent moon')",
-      "outfit_top": "Detailed upper body clothing",
-      "outfit_bottom": "Detailed lower body clothing",
-      "helmet_or_hat": "Head covering or 'None'",
-      "shoes_or_footwear": "Detailed footwear description",
-      "accessories": "All accessories and items carried",
-      "texture_detail": "Fabric and material textures (e.g., 'Wool is thick and durable, leather is supple')",
-      "material_reference": "Materials used (e.g., 'Undyed wool, linen, soft leather')"
+      "name": "Character's full name",
+      "species": "Human",
+      "gender": "Male/Female",
+      "age": "45 years old",
+      "body_build": "Tall and muscular, broad shoulders, imposing presence",
+      "face_shape": "Square jaw, prominent cheekbones, weathered features",
+      "hair": "Short dark brown hair with grey at temples, slightly receding",
+      "facial_hair": "Full trimmed beard, salt-and-pepper",
+      "skin_or_fur_color": "Olive Mediterranean complexion, sun-weathered",
+      "eye_color": "Deep brown, intense and calculating",
+      "signature_feature": "A prominent scar across left eyebrow",
+      "outfit_top": "Bronze breastplate over dark red tunic, leather shoulder guards",
+      "outfit_bottom": "Dark leather battle skirt with metal studs, leg greaves",
+      "helmet_or_hat": "Crested bronze helmet with red plume (when in battle)",
+      "shoes_or_footwear": "Leather sandals with bronze shin guards",
+      "accessories": "Gold signet ring, leather sword belt, bronze armband",
+      "texture_detail": "Armor is polished but battle-worn, tunic is fine wool",
+      "material_reference": "Bronze, leather, wool, gold accents"
     }
   },
-  "era": "Time period and setting"
+  "era": "Ancient Greece, 5th century BC, Sicilian city-state"
 }
 
-RULES:
+MANDATORY RULES:
 - CHAR_A = protagonist/main character
 - CHAR_B, CHAR_C, etc = other characters in order of importance
-- Be VERY DETAILED for visual consistency across scenes
+- NEVER write "not specified", "not mentioned", "unknown", or "implied"
+- NEVER include explanations like "As a general, he would likely..."
+- Every field MUST contain a direct visual description, not commentary
+- INVENT appropriate details based on era, role, and cultural context
+- Be SPECIFIC: colors, materials, textures, exact visual details
 - NO voice or dialogue fields
 - Return ONLY valid JSON`;
 
