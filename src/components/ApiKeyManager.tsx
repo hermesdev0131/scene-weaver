@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
@@ -16,27 +16,26 @@ const maskKey = (key: string): string => {
 };
 
 export function ApiKeyManager({ keys, onSave }: ApiKeyManagerProps) {
-  const [localKeys, setLocalKeys] = useState<string[]>(keys.length > 0 ? keys : ['']);
+  const [newKey, setNewKey] = useState('');
   const [open, setOpen] = useState(false);
 
-  const addKey = () => {
-    setLocalKeys([...localKeys, '']);
+  // Reset new key input when dialog opens
+  useEffect(() => {
+    if (open) {
+      setNewKey('');
+    }
+  }, [open]);
+
+  const handleAddKey = () => {
+    if (newKey.trim()) {
+      onSave([...keys, newKey.trim()]);
+      setNewKey('');
+    }
   };
 
-  const removeKey = (index: number) => {
-    setLocalKeys(localKeys.filter((_, i) => i !== index));
-  };
-
-  const updateKey = (index: number, value: string) => {
-    const updated = [...localKeys];
-    updated[index] = value;
-    setLocalKeys(updated);
-  };
-
-  const handleSave = () => {
-    const validKeys = localKeys.filter(k => k.trim().length > 0);
-    onSave(validKeys);
-    setOpen(false);
+  const handleDeleteKey = (index: number) => {
+    const updatedKeys = keys.filter((_, i) => i !== index);
+    onSave(updatedKeys);
   };
 
   return (
@@ -58,46 +57,51 @@ export function ApiKeyManager({ keys, onSave }: ApiKeyManagerProps) {
             Add multiple API keys for automatic rotation when rate limits are hit.
           </p>
 
-          {/* Show saved keys summary */}
+          {/* Show saved keys with delete option */}
           {keys.length > 0 && (
-            <div className="bg-muted/50 rounded-lg p-3 space-y-1">
+            <div className="bg-muted/50 rounded-lg p-3 space-y-2">
               <p className="text-xs font-medium text-muted-foreground">Saved Keys ({keys.length}):</p>
               {keys.map((key, index) => (
-                <div key={index} className="text-xs font-mono text-foreground/70">
-                  {index + 1}. {maskKey(key)}
+                <div key={index} className="flex items-center justify-between gap-2">
+                  <span className="text-xs font-mono text-foreground/70">
+                    {index + 1}. {maskKey(key)}
+                  </span>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-6 w-6 text-destructive hover:text-destructive"
+                    onClick={() => handleDeleteKey(index)}
+                  >
+                    <Trash2 className="h-3 w-3" />
+                  </Button>
                 </div>
               ))}
             </div>
           )}
 
-          {localKeys.map((key, index) => (
-            <div key={index} className="flex gap-2">
-              <Input
-                type="password"
-                placeholder={`API Key ${index + 1}`}
-                value={key}
-                onChange={(e) => updateKey(index, e.target.value)}
-                className="flex-1 bg-background border-border"
-              />
-              {localKeys.length > 1 && (
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  onClick={() => removeKey(index)}
-                  className="text-destructive hover:text-destructive"
-                >
-                  <Trash2 className="h-4 w-4" />
-                </Button>
-              )}
-            </div>
-          ))}
-          <Button variant="outline" onClick={addKey} className="w-full">
-            <Plus className="h-4 w-4 mr-2" />
-            Add Another Key
-          </Button>
-          <Button onClick={handleSave} className="w-full">
-            Save Keys
-          </Button>
+          {/* Add new key input */}
+          <div className="flex gap-2">
+            <Input
+              type="text"
+              placeholder="Paste new API key here..."
+              value={newKey}
+              onChange={(e) => setNewKey(e.target.value)}
+              className="flex-1 bg-background border-border font-mono text-xs"
+              onKeyDown={(e) => e.key === 'Enter' && handleAddKey()}
+            />
+            <Button
+              variant="outline"
+              size="icon"
+              onClick={handleAddKey}
+              disabled={!newKey.trim()}
+            >
+              <Plus className="h-4 w-4" />
+            </Button>
+          </div>
+
+          <p className="text-xs text-muted-foreground">
+            Keys are stored locally in your browser.
+          </p>
         </div>
       </DialogContent>
     </Dialog>
