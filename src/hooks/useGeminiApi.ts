@@ -133,6 +133,18 @@ export function useGeminiApi() {
   // GEMINI API CALL
   // ============================================================================
 
+  // Parse retry delay from API error message (e.g., "Please retry in 41.199287294s")
+  const parseRetryDelay = (errorMessage: string): number => {
+    const match = errorMessage.match(/retry in (\d+(?:\.\d+)?)s/i);
+    if (match) {
+      const seconds = parseFloat(match[1]);
+      // Add 2 seconds buffer, cap at 120 seconds
+      return Math.min(Math.ceil(seconds + 2) * 1000, 120000);
+    }
+    // Default to 60 seconds if can't parse
+    return 60000;
+  };
+
   const callGemini = useCallback(async (
     prompt: string,
     usePro: boolean = false,
@@ -144,12 +156,14 @@ export function useGeminiApi() {
 
     const url = usePro ? GEMINI_PRO_URL : GEMINI_API_URL;
     let lastError: Error | null = null;
+    let lastRetryDelay = 60000; // Default 60s
     const triedIndices = new Set<number>();
 
     const { key: firstKey, index: firstIndex } = getNextKey();
     let currentKey = firstKey;
     let currentIndex = firstIndex;
 
+    // First pass: try all keys without waiting
     while (triedIndices.size < apiKeys.keys.length) {
       triedIndices.add(currentIndex);
       console.log(`Using API key ${currentIndex + 1}/${apiKeys.keys.length} (call #${callCountRef.current})`);
@@ -170,8 +184,11 @@ export function useGeminiApi() {
         if (!response.ok) {
           const error = await response.json();
           if (response.status === 429 || response.status === 403) {
-            console.warn(`Key ${currentIndex + 1} rate limited, trying next...`);
-            lastError = new Error(`API key ${currentIndex + 1} failed: ${error.error?.message || 'Rate limited'}`);
+            const errorMsg = error.error?.message || 'Rate limited';
+            console.warn(`Key ${currentIndex + 1} rate limited: ${errorMsg}`);
+            lastError = new Error(`API key ${currentIndex + 1} failed: ${errorMsg}`);
+            lastRetryDelay = parseRetryDelay(errorMsg);
+
             for (let i = 0; i < apiKeys.keys.length; i++) {
               const nextIdx = (currentIndex + 1 + i) % apiKeys.keys.length;
               if (!triedIndices.has(nextIdx)) {
@@ -206,7 +223,38 @@ export function useGeminiApi() {
       }
     }
 
-    throw new Error(`All API keys failed. Last error: ${lastError?.message}`);
+    // All keys failed - wait for the suggested retry time and try once more
+    console.log(`All keys rate limited. Waiting ${lastRetryDelay / 1000}s before retry...`);
+    await new Promise(resolve => setTimeout(resolve, lastRetryDelay));
+
+    // Reset and try one more time with the first key
+    console.log('Retrying after rate limit cooldown...');
+    const { key: retryKey, index: retryIndex } = getNextKey();
+    console.log(`Using API key ${retryIndex + 1}/${apiKeys.keys.length} (retry after cooldown)`);
+
+    try {
+      const response = await fetch(`${url}?key=${retryKey}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: prompt }] }],
+          generationConfig: {
+            temperature: 0.7,
+            maxOutputTokens: maxTokens,
+          },
+        }),
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error?.message || 'API request failed after retry');
+      }
+
+      const data = await response.json();
+      return data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+    } catch (err) {
+      throw new Error(`All API keys failed after retry. Last error: ${lastError?.message}`);
+    }
   }, [apiKeys.keys, getNextKey]);
 
   // ============================================================================
