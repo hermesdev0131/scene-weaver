@@ -2,7 +2,7 @@
 // CHARACTER TYPES
 // ============================================================================
 
-// Locked identity fields - NEVER change across scenes
+// Locked identity fields - NEVER change across scenes (no voice/dialogue)
 export interface CharacterIdentity {
   name: string;
   species: string;
@@ -22,19 +22,18 @@ export interface CharacterIdentity {
   accessories: string;
   texture_detail: string;
   material_reference: string;
-  voice_personality: string;
 }
 
-// Variable per scene - changes with each scene
+// Variable per scene - changes with each scene (ACTION FOCUSED)
 export interface CharacterPerformance {
   position: string;
   orientation: string;
   pose: string;
   expression: string;
   action_flow: {
-    pre_action: string;
-    main_action: string;
-    post_action: string;
+    pre_action: string;   // What character does before main action
+    main_action: string;  // Primary physical action during scene
+    post_action: string;  // What character does after main action
   };
 }
 
@@ -58,21 +57,15 @@ export interface Camera {
   focus: string;
 }
 
+// Audio is environmental/action sounds only - NO dialogue/voice
 export interface FoleyAmbience {
-  ambience: string[];
-  fx: string[];
-  music: string;
-}
-
-export interface DialogueLine {
-  speaker: string;        // CHAR_A, CHAR_B, etc.
-  voice: string;          // copied from character's voice_personality
-  language: string;
-  line: string;
+  ambience: string[];   // Background environmental sounds
+  fx: string[];         // Action/object sound effects
+  music: string;        // Score/soundtrack description
 }
 
 // ============================================================================
-// FULL SCENE PROMPT (final output per scene)
+// FULL SCENE PROMPT (final output per scene) - ACTION FOCUSED, NO DIALOGUE
 // ============================================================================
 
 export interface FullScenePrompt {
@@ -83,8 +76,8 @@ export interface FullScenePrompt {
   background_lock: BackgroundLock;
   camera: Camera;
   foley_and_ambience: FoleyAmbience;
-  dialogue: DialogueLine[];
-  lip_sync_director_note: string;
+  // Scene action summary for continuity
+  scene_action_summary: string;
 }
 
 // ============================================================================
@@ -95,6 +88,7 @@ export interface SceneSegment {
   text: string;
   duration_sec: number;
   characters_present: string[];  // CHAR_A, CHAR_B, etc.
+  action_hint: string;           // Brief action description for this segment
 }
 
 export interface StoryAnalysis {
@@ -112,13 +106,31 @@ export interface GenerationState {
   isGenerating: boolean;
   currentScene: number;
   totalScenes: number;
-  phase: 'idle' | 'analyzing' | 'generating';
+  phase: 'idle' | 'analyzing' | 'awaiting_approval' | 'generating' | 'paused';
   error: string | null;
 }
 
 export interface ApiKeyConfig {
   keys: string[];
   currentIndex: number;
+}
+
+// ============================================================================
+// PROJECT STATE (for save/restore functionality)
+// ============================================================================
+
+export interface ProjectState {
+  id: string;
+  name: string;
+  createdAt: string;
+  updatedAt: string;
+  script: string;
+  visualStyle: string;
+  sceneDuration: number;
+  storyAnalysis: StoryAnalysis | null;
+  prompts: FullScenePrompt[];
+  currentSceneIndex: number;  // Where generation stopped
+  isComplete: boolean;
 }
 
 // ============================================================================

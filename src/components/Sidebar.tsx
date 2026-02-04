@@ -2,17 +2,25 @@ import { Textarea } from '@/components/ui/textarea';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
-import { Wand2, Loader2 } from 'lucide-react';
-import { GenerationState } from '@/types/prompt';
+import { Wand2, Loader2, Pause, Play, X, RotateCcw, Trash2 } from 'lucide-react';
+import { GenerationState, ProjectState } from '@/types/prompt';
 
 interface SidebarProps {
   script: string;
   onScriptChange: (value: string) => void;
   visualStyle: string;
   onVisualStyleChange: (value: string) => void;
+  sceneDuration: number;
+  onSceneDurationChange: (value: number) => void;
   onGenerate: () => void;
+  onPause: () => void;
+  onResume: () => void;
+  onCancel: () => void;
   state: GenerationState;
   hasApiKeys: boolean;
+  savedProgress?: ProjectState | null;
+  onContinueProgress?: () => void;
+  onDismissProgress?: () => void;
 }
 
 export function Sidebar({
@@ -20,12 +28,22 @@ export function Sidebar({
   onScriptChange,
   visualStyle,
   onVisualStyleChange,
+  sceneDuration,
+  onSceneDurationChange,
   onGenerate,
+  onPause,
+  onResume,
+  onCancel,
   state,
   hasApiKeys,
+  savedProgress,
+  onContinueProgress,
+  onDismissProgress,
 }: SidebarProps) {
   const wordCount = script.trim().split(/\s+/).filter(w => w).length;
-  const estimatedScenes = Math.max(1, Math.ceil(wordCount / 20));
+  // Estimate based on ~3 words per second of narration
+  const wordsPerScene = sceneDuration * 3;
+  const estimatedScenes = Math.max(1, Math.ceil(wordCount / wordsPerScene));
 
   return (
     <aside className="w-80 min-w-80 bg-sidebar border-r border-sidebar-border flex flex-col h-full">
@@ -73,25 +91,87 @@ Example: Hand-drawn illustration style, historical epic feel, with strong outlin
             This will be locked and applied identically to every scene.
           </p>
         </div>
+
+        <div className="space-y-2">
+          <Label htmlFor="duration" className="text-sidebar-foreground">
+            Scene Duration
+          </Label>
+          <div className="flex items-center gap-3">
+            <Input
+              id="duration"
+              type="number"
+              min={4}
+              max={12}
+              value={sceneDuration}
+              onChange={(e) => onSceneDurationChange(Math.max(4, Math.min(12, parseInt(e.target.value) || 6)))}
+              className="w-20 bg-sidebar-accent border-sidebar-border text-sidebar-foreground"
+            />
+            <span className="text-sm text-muted-foreground">seconds per scene</span>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Shorter scenes = more dynamic cuts (4-12 sec recommended)
+          </p>
+        </div>
       </div>
 
       <div className="p-4 border-t border-sidebar-border space-y-3">
         {state.isGenerating && (
           <div className="bg-primary/10 rounded-lg p-3">
             <div className="flex items-center gap-2 text-sm text-primary">
-              <Loader2 className="h-4 w-4 animate-spin" />
+              {state.phase === 'paused' ? (
+                <Pause className="h-4 w-4" />
+              ) : (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              )}
               {state.phase === 'analyzing' ? (
                 'Analyzing script & extracting characters...'
+              ) : state.phase === 'paused' ? (
+                `Paused at scene ${state.currentScene} of ${state.totalScenes}`
               ) : (
                 `Generating scene ${state.currentScene} of ${state.totalScenes}`
               )}
             </div>
-            {state.phase === 'generating' && state.totalScenes > 0 && (
+            {(state.phase === 'generating' || state.phase === 'paused') && state.totalScenes > 0 && (
               <div className="mt-2 h-1.5 bg-sidebar-accent rounded-full overflow-hidden">
                 <div
                   className="h-full bg-primary transition-all duration-300"
                   style={{ width: `${(state.currentScene / state.totalScenes) * 100}%` }}
                 />
+              </div>
+            )}
+            {/* Pause/Resume/Cancel controls */}
+            {state.phase !== 'analyzing' && (
+              <div className="flex gap-2 mt-3">
+                {state.phase === 'paused' ? (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="flex-1"
+                    onClick={onResume}
+                  >
+                    <Play className="h-3 w-3 mr-1" />
+                    Resume
+                  </Button>
+                ) : (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="flex-1"
+                    onClick={onPause}
+                  >
+                    <Pause className="h-3 w-3 mr-1" />
+                    Pause
+                  </Button>
+                )}
+                <Button
+                  variant="destructive"
+                  size="sm"
+                  className="flex-1"
+                  onClick={onCancel}
+                >
+                  <X className="h-3 w-3 mr-1" />
+                  Cancel
+                </Button>
               </div>
             )}
           </div>
@@ -100,6 +180,37 @@ Example: Hand-drawn illustration style, historical epic feel, with strong outlin
         {state.error && (
           <div className="bg-destructive/10 border border-destructive/20 rounded-lg p-3">
             <p className="text-sm text-destructive">{state.error}</p>
+          </div>
+        )}
+
+        {/* Saved Progress Banner */}
+        {savedProgress && !state.isGenerating && (
+          <div className="bg-amber-500/10 border border-amber-500/20 rounded-lg p-3">
+            <p className="text-sm text-amber-600 dark:text-amber-400 font-medium">
+              Saved Progress Found
+            </p>
+            <p className="text-xs text-muted-foreground mt-1">
+              {savedProgress.prompts.length} of {savedProgress.storyAnalysis?.scenes.length || '?'} scenes completed
+            </p>
+            <div className="flex gap-2 mt-2">
+              <Button
+                variant="outline"
+                size="sm"
+                className="flex-1"
+                onClick={onContinueProgress}
+                disabled={!hasApiKeys}
+              >
+                <RotateCcw className="h-3 w-3 mr-1" />
+                Continue
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={onDismissProgress}
+              >
+                <Trash2 className="h-3 w-3" />
+              </Button>
+            </div>
           </div>
         )}
 

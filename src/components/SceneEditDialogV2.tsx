@@ -76,12 +76,11 @@ export function SceneEditDialogV2({ scene, open, onOpenChange, onSave }: SceneEd
         </DialogHeader>
 
         <Tabs defaultValue="general" className="w-full">
-          <TabsList className="grid w-full grid-cols-5">
+          <TabsList className="grid w-full grid-cols-4">
             <TabsTrigger value="general">General</TabsTrigger>
             <TabsTrigger value="background">Background</TabsTrigger>
             <TabsTrigger value="camera">Camera</TabsTrigger>
             <TabsTrigger value="audio">Audio</TabsTrigger>
-            <TabsTrigger value="dialogue">Dialogue</TabsTrigger>
           </TabsList>
 
           {/* General Tab */}
@@ -117,12 +116,13 @@ export function SceneEditDialogV2({ scene, open, onOpenChange, onSave }: SceneEd
             </div>
 
             <div className="grid gap-2">
-              <Label htmlFor="lip_sync">Lip Sync Director Note</Label>
+              <Label htmlFor="action_summary">Scene Action Summary</Label>
               <Textarea
-                id="lip_sync"
-                value={editedScene.lip_sync_director_note}
-                onChange={(e) => updateField('lip_sync_director_note', e.target.value)}
-                rows={2}
+                id="action_summary"
+                value={editedScene.scene_action_summary}
+                onChange={(e) => updateField('scene_action_summary', e.target.value)}
+                rows={3}
+                placeholder="Describe what happens in this scene..."
               />
             </div>
 
@@ -250,37 +250,6 @@ export function SceneEditDialogV2({ scene, open, onOpenChange, onSave }: SceneEd
             </div>
           </TabsContent>
 
-          {/* Dialogue Tab */}
-          <TabsContent value="dialogue" className="space-y-4">
-            {editedScene.dialogue.length === 0 ? (
-              <p className="text-sm text-muted-foreground italic">No dialogue in this scene.</p>
-            ) : (
-              editedScene.dialogue.map((line, idx) => (
-                <div key={idx} className="border rounded-lg p-3 space-y-2">
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs px-1.5 py-0.5 rounded bg-primary/20 text-primary font-mono">
-                      {line.speaker}
-                    </span>
-                    <span className="text-xs text-muted-foreground">
-                      ({line.language})
-                    </span>
-                  </div>
-                  <Textarea
-                    value={line.line}
-                    onChange={(e) => {
-                      const newDialogue = [...editedScene.dialogue];
-                      newDialogue[idx] = { ...newDialogue[idx], line: e.target.value };
-                      updateField('dialogue', newDialogue);
-                    }}
-                    rows={2}
-                  />
-                  <p className="text-xs text-muted-foreground italic truncate">
-                    Voice: {line.voice}
-                  </p>
-                </div>
-              ))
-            )}
-          </TabsContent>
         </Tabs>
 
         <DialogFooter>

@@ -1,21 +1,55 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Sidebar } from '@/components/Sidebar';
 import { SceneOutputV2 } from '@/components/SceneOutputV2';
 import { ApiKeyManager } from '@/components/ApiKeyManager';
 import { CharacterPanelV2 } from '@/components/CharacterPanelV2';
+import { CharacterApprovalDialog } from '@/components/CharacterApprovalDialog';
 import { useGeminiApi } from '@/hooks/useGeminiApi';
-import { FullScenePrompt, CharacterIdentity } from '@/types/prompt';
+import { FullScenePrompt, CharacterIdentity, SceneSegment, ProjectState } from '@/types/prompt';
 import { toast } from 'sonner';
 
 const Index = () => {
   const [script, setScript] = useState('');
   const [visualStyle, setVisualStyle] = useState('');
+  const [sceneDuration, setSceneDuration] = useState(6);
   const [prompts, setPrompts] = useState<FullScenePrompt[]>([]);
   const [regeneratingIndex, setRegeneratingIndex] = useState<number | null>(null);
   const [characters, setCharacters] = useState<Record<string, CharacterIdentity>>({});
   const [era, setEra] = useState<string | null>(null);
 
-  const { state, apiKeys, saveApiKeys, generatePromptsV2, regenerateSceneV2, storyAnalysis } = useGeminiApi();
+  // Character approval flow state
+  const [pendingApproval, setPendingApproval] = useState<{
+    characters: Record<string, CharacterIdentity>;
+    era: string;
+    scenes: SceneSegment[];
+  } | null>(null);
+
+  const {
+    state,
+    apiKeys,
+    saveApiKeys,
+    generatePromptsV2,
+    regenerateSceneV2,
+    storyAnalysis,
+    pauseGeneration,
+    resumeGeneration,
+    cancelGeneration,
+    approveCharacters,
+    loadProgress,
+    clearProgress,
+    continueFromProgress
+  } = useGeminiApi();
+
+  // Saved progress state
+  const [savedProgress, setSavedProgress] = useState<ProjectState | null>(null);
+
+  // Check for saved progress on mount
+  useEffect(() => {
+    const saved = loadProgress();
+    if (saved && !saved.isComplete) {
+      setSavedProgress(saved);
+    }
+  }, [loadProgress]);
 
   const handleGenerate = async () => {
     if (!script.trim() || !visualStyle.trim()) {
@@ -32,9 +66,25 @@ const Index = () => {
       setPrompts([]);
       setCharacters({});
       setEra(null);
-      await generatePromptsV2(script, visualStyle, (updatedPrompts) => {
-        setPrompts(updatedPrompts);
-      });
+      setPendingApproval(null);
+
+      await generatePromptsV2(
+        script,
+        visualStyle,
+        sceneDuration,
+        (updatedPrompts) => {
+          setPrompts(updatedPrompts);
+        },
+        (extractedCharacters, extractedEra, scenes) => {
+          // Show character approval dialog
+          setPendingApproval({
+            characters: extractedCharacters,
+            era: extractedEra,
+            scenes
+          });
+        }
+      );
+
       // Update characters and era after generation
       if (storyAnalysis) {
         setCharacters(storyAnalysis.characters);
@@ -46,18 +96,57 @@ const Index = () => {
     }
   };
 
-  // Update characters/era after state changes (storyAnalysis updates after generation)
-  const updateFromAnalysis = () => {
-    if (storyAnalysis && Object.keys(characters).length === 0) {
-      setCharacters(storyAnalysis.characters);
-      setEra(storyAnalysis.era);
+  const handleApproveCharacters = (approvedCharacters: Record<string, CharacterIdentity>) => {
+    setCharacters(approvedCharacters);
+    if (pendingApproval) {
+      setEra(pendingApproval.era);
+    }
+    setPendingApproval(null);
+    approveCharacters(approvedCharacters);
+  };
+
+  const handleCancelApproval = () => {
+    setPendingApproval(null);
+    cancelGeneration();
+  };
+
+  const handleContinueProgress = async () => {
+    if (!savedProgress) return;
+
+    if (apiKeys.keys.length === 0) {
+      toast.error('Please configure at least one Gemini API key');
+      return;
+    }
+
+    try {
+      // Restore state from saved progress
+      setScript(savedProgress.script);
+      setVisualStyle(savedProgress.visualStyle);
+      setSceneDuration(savedProgress.sceneDuration);
+      setPrompts(savedProgress.prompts);
+      if (savedProgress.storyAnalysis) {
+        setCharacters(savedProgress.storyAnalysis.characters);
+        setEra(savedProgress.storyAnalysis.era);
+      }
+      setSavedProgress(null);
+
+      toast.info(`Continuing from scene ${savedProgress.currentSceneIndex + 1}...`);
+
+      await continueFromProgress(savedProgress, (updatedPrompts) => {
+        setPrompts(updatedPrompts);
+      });
+
+      toast.success('All prompts generated successfully!');
+    } catch (error) {
+      // Error is already handled in the hook
     }
   };
 
-  // Call this when prompts change
-  if (prompts.length > 0 && Object.keys(characters).length === 0 && storyAnalysis) {
-    updateFromAnalysis();
-  }
+  const handleDismissProgress = () => {
+    clearProgress();
+    setSavedProgress(null);
+    toast.info('Saved progress cleared');
+  };
 
   const handleUpdatePrompt = (index: number, updatedPrompt: FullScenePrompt) => {
     setPrompts(prev => {
@@ -92,9 +181,17 @@ const Index = () => {
         onScriptChange={setScript}
         visualStyle={visualStyle}
         onVisualStyleChange={setVisualStyle}
+        sceneDuration={sceneDuration}
+        onSceneDurationChange={setSceneDuration}
         onGenerate={handleGenerate}
+        onPause={pauseGeneration}
+        onResume={resumeGeneration}
+        onCancel={cancelGeneration}
         state={state}
         hasApiKeys={apiKeys.keys.length > 0}
+        savedProgress={savedProgress}
+        onContinueProgress={handleContinueProgress}
+        onDismissProgress={handleDismissProgress}
       />
 
       <main className="flex-1 flex flex-col overflow-hidden">
@@ -127,6 +224,16 @@ const Index = () => {
           />
         </div>
       </main>
+
+      {/* Character Approval Dialog */}
+      <CharacterApprovalDialog
+        open={pendingApproval !== null}
+        characters={pendingApproval?.characters ?? {}}
+        era={pendingApproval?.era ?? ''}
+        scenes={pendingApproval?.scenes ?? []}
+        onApprove={handleApproveCharacters}
+        onCancel={handleCancelApproval}
+      />
     </div>
   );
 };

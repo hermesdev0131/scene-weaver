@@ -1,17 +1,16 @@
 import { useState, useCallback, useRef } from 'react';
 import {
   CharacterIdentity,
-  CharacterPerformance,
   CharacterLock,
   BackgroundLock,
   Camera,
   FoleyAmbience,
-  DialogueLine,
   FullScenePrompt,
   SceneSegment,
   StoryAnalysis,
   GenerationState,
   ApiKeyConfig,
+  ProjectState,
   // Legacy types for backwards compatibility
   Character,
   ScenePrompt,
@@ -45,54 +44,93 @@ export function useGeminiApi() {
   // Locks - set once during analysis, never regenerated
   const storyAnalysisLock = useRef<StoryAnalysis | null>(null);
 
+  // Approval resolver - for character approval flow
+  const approvalResolverRef = useRef<((approved: boolean) => void) | null>(null);
+
+  // ============================================================================
+  // PAUSE / CANCEL / APPROVAL CONTROLS
+  // ============================================================================
+
+  const isPausedRef = useRef(false);
+  const isCancelledRef = useRef(false);
+  const pauseResolverRef = useRef<(() => void) | null>(null);
+
+  const pauseGeneration = useCallback(() => {
+    isPausedRef.current = true;
+    setState(prev => ({ ...prev, phase: 'paused' }));
+  }, []);
+
+  const resumeGeneration = useCallback(() => {
+    isPausedRef.current = false;
+    setState(prev => ({ ...prev, phase: 'generating' }));
+    if (pauseResolverRef.current) {
+      pauseResolverRef.current();
+      pauseResolverRef.current = null;
+    }
+  }, []);
+
+  const cancelGeneration = useCallback(() => {
+    isCancelledRef.current = true;
+    isPausedRef.current = false;
+    if (pauseResolverRef.current) {
+      pauseResolverRef.current();
+      pauseResolverRef.current = null;
+    }
+    if (approvalResolverRef.current) {
+      approvalResolverRef.current(false);
+      approvalResolverRef.current = null;
+    }
+  }, []);
+
+  const waitIfPaused = useCallback(async () => {
+    if (isPausedRef.current) {
+      await new Promise<void>(resolve => {
+        pauseResolverRef.current = resolve;
+      });
+    }
+  }, []);
+
+  // Approve characters and continue generation
+  const approveCharacters = useCallback((updatedCharacters?: Record<string, CharacterIdentity>) => {
+    if (updatedCharacters && storyAnalysisLock.current) {
+      storyAnalysisLock.current.characters = updatedCharacters;
+    }
+    if (approvalResolverRef.current) {
+      approvalResolverRef.current(true);
+      approvalResolverRef.current = null;
+    }
+  }, []);
+
   // ============================================================================
   // API KEY MANAGEMENT (Proactive Round-Robin)
   // ============================================================================
 
-  // Counter for proactive round-robin rotation
   const callCountRef = useRef(0);
 
   const saveApiKeys = useCallback((keys: string[]) => {
     const config = { keys, currentIndex: 0 };
     setApiKeys(config);
     localStorage.setItem('gemini_api_keys', JSON.stringify(config));
-    callCountRef.current = 0; // Reset call count when keys change
+    callCountRef.current = 0;
   }, []);
 
-  // Proactive round-robin: get next key before each call
   const getNextKey = useCallback((): { key: string; index: number } => {
     if (apiKeys.keys.length === 0) {
       throw new Error('No API keys configured');
     }
-    // Use call count for true round-robin distribution
     const index = callCountRef.current % apiKeys.keys.length;
     callCountRef.current++;
     return { key: apiKeys.keys[index], index };
   }, [apiKeys.keys]);
 
-  // Reactive rotation on failure (fallback)
-  const rotateKey = useCallback(() => {
-    setApiKeys(prev => {
-      const nextIndex = (prev.currentIndex + 1) % prev.keys.length;
-      const updated = { ...prev, currentIndex: nextIndex };
-      localStorage.setItem('gemini_api_keys', JSON.stringify(updated));
-      return updated;
-    });
-  }, []);
-
-  // Calculate optimal delay based on number of keys
-  // Free tier: 10 RPM per key = 6000ms minimum between calls per key
-  // With round-robin: delay = 6500ms / numberOfKeys (with buffer)
   const calculateDelay = useCallback((): number => {
     const numKeys = apiKeys.keys.length;
-    if (numKeys === 0) return 6500; // Default safe delay
-    // 6500ms base / number of keys = delay between calls
-    // Minimum 300ms to prevent bursting
+    if (numKeys === 0) return 6500;
     return Math.max(300, Math.ceil(6500 / numKeys));
   }, [apiKeys.keys.length]);
 
   // ============================================================================
-  // GEMINI API CALL (with proactive round-robin)
+  // GEMINI API CALL
   // ============================================================================
 
   const callGemini = useCallback(async (
@@ -108,7 +146,6 @@ export function useGeminiApi() {
     let lastError: Error | null = null;
     const triedIndices = new Set<number>();
 
-    // Start with proactive round-robin key selection
     const { key: firstKey, index: firstIndex } = getNextKey();
     let currentKey = firstKey;
     let currentIndex = firstIndex;
@@ -135,7 +172,6 @@ export function useGeminiApi() {
           if (response.status === 429 || response.status === 403) {
             console.warn(`Key ${currentIndex + 1} rate limited, trying next...`);
             lastError = new Error(`API key ${currentIndex + 1} failed: ${error.error?.message || 'Rate limited'}`);
-            // Move to next untried key
             for (let i = 0; i < apiKeys.keys.length; i++) {
               const nextIdx = (currentIndex + 1 + i) % apiKeys.keys.length;
               if (!triedIndices.has(nextIdx)) {
@@ -150,8 +186,6 @@ export function useGeminiApi() {
         }
 
         const data = await response.json();
-
-        // Log finish reason to debug truncation
         const finishReason = data.candidates?.[0]?.finishReason;
         console.log('Gemini finish reason:', finishReason);
         if (finishReason && finishReason !== 'STOP') {
@@ -161,7 +195,6 @@ export function useGeminiApi() {
         return data.candidates?.[0]?.content?.parts?.[0]?.text || '';
       } catch (err) {
         lastError = err instanceof Error ? err : new Error('Unknown error');
-        // Move to next untried key
         for (let i = 0; i < apiKeys.keys.length; i++) {
           const nextIdx = (currentIndex + 1 + i) % apiKeys.keys.length;
           if (!triedIndices.has(nextIdx)) {
@@ -177,27 +210,58 @@ export function useGeminiApi() {
   }, [apiKeys.keys, getNextKey]);
 
   // ============================================================================
-  // PHASE 1: DEEP STORY ANALYSIS
+  // PHASE 1: DEEP STORY ANALYSIS (with detailed character extraction)
   // ============================================================================
 
   const analyzeStoryDeep = useCallback(async (
     script: string,
-    visualStyle: string
+    visualStyle: string,
+    sceneDuration: number = DEFAULT_SCENE_DURATION
   ): Promise<StoryAnalysis> => {
-    // STEP 1: Extract characters only (smaller response)
-    const charPrompt = `Extract characters from this script as JSON. Use SHORT descriptions (5-10 words max per field).
+    const wordsPerScene = Math.round(WORDS_PER_SECOND * sceneDuration);
 
-SCRIPT: ${script.substring(0, 2000)}
+    // STEP 1: Extract DETAILED characters (NO voice/dialogue fields)
+    const charPrompt = `Extract ALL characters from this script with DETAILED physical descriptions for visual consistency.
 
-Return JSON:
-{"characters":{"CHAR_A":{"name":"Name","species":"Human","gender":"M/F","age":"30s","body_build":"athletic","face_shape":"square jaw","hair":"short black","facial_hair":"none","skin_or_fur_color":"tan","eye_color":"brown","signature_feature":"scar","outfit_top":"tunic","outfit_bottom":"pants","helmet_or_hat":"none","shoes_or_footwear":"boots","accessories":"sword","texture_detail":"leather","material_reference":"wool,leather","voice_personality":"deep,calm"}},"era":"Roman era"}
+SCRIPT: ${script.substring(0, 3000)}
 
-Rules: CHAR_A=main character. Keep descriptions VERY SHORT. JSON only, no markdown.`;
+Return JSON with this EXACT structure for each character:
+{
+  "characters": {
+    "CHAR_A": {
+      "name": "Full character name",
+      "species": "Human/Elf/etc",
+      "gender": "Male/Female/Other",
+      "age": "Specific age range (e.g., 'Mid-30s', 'Early 20s', 'Late 50s')",
+      "body_build": "Detailed body description (e.g., 'Slender, agile, deceptively strong')",
+      "face_shape": "Detailed face description (e.g., 'Oval, sharp features, intelligent eyes')",
+      "hair": "Detailed hair description with color, length, style (e.g., 'Long, dark brown, usually tied back severely')",
+      "facial_hair": "Beard/mustache details or 'None'",
+      "skin_or_fur_color": "Detailed skin tone (e.g., 'Olive-toned, sun-kissed')",
+      "eye_color": "Detailed eye description (e.g., 'Alert, hazel eyes that miss nothing')",
+      "signature_feature": "Distinctive identifying feature (e.g., 'A silver pendant shaped like a crescent moon')",
+      "outfit_top": "Detailed upper body clothing",
+      "outfit_bottom": "Detailed lower body clothing",
+      "helmet_or_hat": "Head covering or 'None'",
+      "shoes_or_footwear": "Detailed footwear description",
+      "accessories": "All accessories and items carried",
+      "texture_detail": "Fabric and material textures (e.g., 'Wool is thick and durable, leather is supple')",
+      "material_reference": "Materials used (e.g., 'Undyed wool, linen, soft leather')"
+    }
+  },
+  "era": "Time period and setting"
+}
 
-    const charResponse = await callGemini(charPrompt, false, 4096);
+RULES:
+- CHAR_A = protagonist/main character
+- CHAR_B, CHAR_C, etc = other characters in order of importance
+- Be VERY DETAILED for visual consistency across scenes
+- NO voice or dialogue fields
+- Return ONLY valid JSON`;
+
+    const charResponse = await callGemini(charPrompt, false, 16384);
     console.log('Character response:', charResponse.substring(0, 500));
 
-    // Parse characters
     let charJsonStr = charResponse;
     const charCodeBlock = charResponse.match(/```(?:json)?\s*([\s\S]*?)```/);
     if (charCodeBlock) charJsonStr = charCodeBlock[1].trim();
@@ -212,17 +276,31 @@ Rules: CHAR_A=main character. Keep descriptions VERY SHORT. JSON only, no markdo
       throw new Error('Failed to parse character data');
     }
 
-    // STEP 2: Extract scenes separately
-    const scenePrompt = `Divide this script into scenes of ~20 words each. Return JSON array only.
+    // STEP 2: Extract scenes with ACTION focus
+    const scenePrompt = `Divide this script into ACTION-focused scenes of ~${wordsPerScene} words each (${sceneDuration} seconds).
 
 SCRIPT: ${script}
 
-Return: {"scenes":[{"text":"exact narration text","duration_sec":8,"characters_present":["CHAR_A"]}]}
+Return JSON with scenes focused on PHYSICAL ACTIONS, not dialogue:
+{
+  "scenes": [
+    {
+      "text": "Exact narration text from script",
+      "duration_sec": ${sceneDuration},
+      "characters_present": ["CHAR_A", "CHAR_B"],
+      "action_hint": "Brief description of the main PHYSICAL ACTION in this scene"
+    }
+  ]
+}
 
 Character IDs available: ${Object.keys(charData.characters).join(', ')}
-Return JSON only, no markdown.`;
 
-    const sceneResponse = await callGemini(scenePrompt, false, 8192);
+RULES:
+- Each scene should have a clear PHYSICAL ACTION (not just dialogue/talking)
+- action_hint should describe what characters DO, not what they SAY
+- Return ONLY valid JSON`;
+
+    const sceneResponse = await callGemini(scenePrompt, false, 32768);
     console.log('Scene response:', sceneResponse.substring(0, 500));
 
     let sceneJsonStr = sceneResponse;
@@ -231,7 +309,7 @@ Return JSON only, no markdown.`;
     const sceneMatch = sceneJsonStr.match(/\{[\s\S]*\}/);
     if (!sceneMatch) throw new Error('Failed to extract scenes');
 
-    let sceneData: { scenes: Array<{ text: string; duration_sec: number; characters_present: string[] }> };
+    let sceneData: { scenes: SceneSegment[] };
     try {
       sceneData = JSON.parse(sceneMatch[0]);
     } catch (e) {
@@ -239,12 +317,14 @@ Return JSON only, no markdown.`;
       throw new Error('Failed to parse scene data');
     }
 
-    // Combine into final analysis
     const analysis: StoryAnalysis = {
       characters: charData.characters,
       era: charData.era,
       visual_style_lock: visualStyle,
-      scenes: sceneData.scenes
+      scenes: sceneData.scenes.map(s => ({
+        ...s,
+        action_hint: s.action_hint || ''
+      }))
     };
 
     console.log('Analysis complete:', Object.keys(analysis.characters).length, 'characters,', analysis.scenes.length, 'scenes');
@@ -253,7 +333,7 @@ Return JSON only, no markdown.`;
   }, [callGemini]);
 
   // ============================================================================
-  // PHASE 2: GENERATE SINGLE SCENE PROMPT (with stamping)
+  // PHASE 2: GENERATE SINGLE SCENE (ACTION-FOCUSED, NO DIALOGUE)
   // ============================================================================
 
   const generateScenePromptFull = useCallback(async (
@@ -266,74 +346,82 @@ Return JSON only, no markdown.`;
     const sceneId = `S${sceneIndex + 1}`;
     const presentCharacters = sceneSegment.characters_present;
 
-    // Build character context for the prompt
     const characterContext = presentCharacters.map(charId => {
-      const identity = characterIdentities[charId];
-      if (!identity) return '';
-      return `${charId} (${identity.name}): ${identity.body_build}, ${identity.face_shape}, ${identity.hair}, wearing ${identity.outfit_top} and ${identity.outfit_bottom}. Voice: ${identity.voice_personality}`;
+      const c = characterIdentities[charId];
+      if (!c) return '';
+      return `${charId} (${c.name}): ${c.age}, ${c.body_build}, ${c.face_shape}, ${c.hair}, ${c.facial_hair}, ${c.skin_or_fur_color} skin, ${c.eye_color}. Wearing: ${c.outfit_top}, ${c.outfit_bottom}, ${c.shoes_or_footwear}. Signature: ${c.signature_feature}`;
     }).filter(Boolean).join('\n');
 
-    const scenePrompt = `Generate a complete video scene prompt for scene ${sceneId}.
+    const scenePrompt = `Generate an ACTION-FOCUSED video scene prompt. This is for AI VIDEO GENERATION - characters must MOVE and DO things.
 
-SCENE NARRATION:
+SCENE ${sceneId} NARRATION:
 "${sceneSegment.text}"
 
-CHARACTERS IN THIS SCENE:
+ACTION HINT: ${sceneSegment.action_hint || 'Interpret from narration'}
+
+CHARACTERS IN SCENE:
 ${characterContext}
 
-ERA/SETTING: ${era}
+ERA: ${era}
 VISUAL STYLE: ${visualStyleLock}
 DURATION: ${sceneSegment.duration_sec} seconds
 
-Generate the VARIABLE parts for this scene. For each character present, generate their PERFORMANCE (position, orientation, pose, expression, action_flow).
+EXAMPLE OF GOOD action_flow (follow this pattern):
+{
+  "pre_action": "Her right hand slowly reaches toward the worn leather pouch at her belt, fingers trembling slightly.",
+  "main_action": "She withdraws a crumpled letter, unfolds it with both hands, and brings it close to her face. Her eyes scan the text rapidly, widening with each line. Her grip tightens, crinkling the paper's edges.",
+  "post_action": "She lowers the letter to her chest, pressing it against her heart. Her free hand rises to cover her mouth as she takes a shaky breath, shoulders dropping."
+}
 
-RESPOND WITH THIS EXACT JSON STRUCTURE:
+BAD action_flow (DO NOT do this):
+{
+  "pre_action": "Camera pans left",
+  "main_action": "Character reads letter",
+  "post_action": "Scene fades"
+}
+
+RESPOND WITH EXACT JSON:
 {
   "character_performances": {
     "${presentCharacters[0] || 'CHAR_A'}": {
-      "position": "Where in frame (e.g., 'Foreground, seated at table')",
-      "orientation": "Facing direction and target",
-      "pose": "Body posture description",
-      "expression": "Facial expression and emotion",
+      "position": "Specific position (e.g., 'Standing 2 meters from the doorway, left side of frame')",
+      "orientation": "Body direction (e.g., 'Body angled 45° toward camera, head turned right looking at the window')",
+      "pose": "Stance (e.g., 'Weight on left leg, right foot slightly forward, arms crossed defensively')",
+      "expression": "Face (e.g., 'Brow furrowed, jaw clenched, eyes narrowed with suspicion')",
       "action_flow": {
-        "pre_action": "What happens before main action",
-        "main_action": "Primary action during scene",
-        "post_action": "What happens after main action"
+        "pre_action": "SPECIFIC body movements BEFORE main action - describe what hands, arms, legs, head, torso DO",
+        "main_action": "PRIMARY physical action - DETAILED movements, object interactions, gestures. Minimum 2 sentences.",
+        "post_action": "SPECIFIC body movements AFTER - how body settles, changes position, facial reaction"
       }
     }
   },
   "background_lock": {
-    "setting": "Location and time of day",
-    "scenery": "Detailed environment description",
-    "lighting": "Lighting setup with color references"
+    "setting": "Location and time",
+    "scenery": "Environment details",
+    "lighting": "Light source, direction, shadows"
   },
   "camera": {
-    "framing": "Shot type (close-up, medium, wide, etc.)",
-    "angle": "Camera angle (eye-level, low, high)",
-    "movement": "Camera movement description",
-    "focus": "Depth of field and focus points"
+    "framing": "Shot type",
+    "angle": "Camera angle",
+    "movement": "Camera motion (keep minimal - focus on CHARACTER movement)",
+    "focus": "Focus details"
   },
   "foley_and_ambience": {
-    "ambience": ["Background sound 1", "Background sound 2"],
-    "fx": ["Sound effect 1", "Sound effect 2"],
-    "music": "Music description with melody, tempo, mood"
+    "ambience": ["Environmental sounds"],
+    "fx": ["Action sounds (footsteps, cloth, objects)"],
+    "music": "Score mood"
   },
-  "dialogue": [
-    {
-      "speaker": "CHAR_A",
-      "language": "Spanish",
-      "line": "The exact dialogue line"
-    }
-  ],
-  "lip_sync_director_note": "Direction for lip sync and facial acting"
+  "scene_action_summary": "One sentence: WHO does WHAT physical action"
 }
 
-RULES:
-- Generate performance for ALL characters listed in CHARACTERS IN THIS SCENE
-- If there's no dialogue in this scene, use an empty array: "dialogue": []
-- action_flow must connect logically to adjacent scenes
-- Use the era and visual style to inform all descriptions
-- Return ONLY valid JSON`;
+MANDATORY RULES:
+1. action_flow MUST describe CHARACTER BODY MOVEMENTS, not camera movements
+2. Each action field must be 1-3 detailed sentences about PHYSICAL motion
+3. Include: hands, arms, legs, head, torso, facial muscles
+4. Describe HOW things are done (slowly, quickly, hesitantly, forcefully)
+5. NO dialogue, NO speaking, NO voice - ONLY visual physical action
+6. The scene should have MOTION that can be animated
+7. Return ONLY valid JSON`;
 
     const response = await callGemini(scenePrompt, false, 4096);
 
@@ -344,7 +432,7 @@ RULES:
 
     const sceneData = JSON.parse(jsonMatch[0]);
 
-    // STAMPING: Merge locked identities with generated performances
+    // Stamp locked identities with generated performances
     const characterLock: Record<string, CharacterLock> = {};
 
     for (const charId of presentCharacters) {
@@ -353,9 +441,7 @@ RULES:
 
       if (identity && performance) {
         characterLock[charId] = {
-          // Stamp the LOCKED identity (byte-identical across all scenes)
           ...identity,
-          // Add the VARIABLE performance (unique to this scene)
           position: performance.position || '',
           orientation: performance.orientation || '',
           pose: performance.pose || '',
@@ -369,15 +455,6 @@ RULES:
       }
     }
 
-    // Add voice to dialogue entries
-    const dialogue: DialogueLine[] = (sceneData.dialogue || []).map((d: any) => ({
-      speaker: d.speaker,
-      voice: characterIdentities[d.speaker]?.voice_personality || '',
-      language: d.language || 'Spanish',
-      line: d.line,
-    }));
-
-    // Assemble the final scene prompt
     const fullPrompt: FullScenePrompt = {
       scene_id: sceneId,
       duration_sec: sceneSegment.duration_sec,
@@ -386,22 +463,26 @@ RULES:
       background_lock: sceneData.background_lock || { setting: '', scenery: '', lighting: '' },
       camera: sceneData.camera || { framing: '', angle: '', movement: '', focus: '' },
       foley_and_ambience: sceneData.foley_and_ambience || { ambience: [], fx: [], music: '' },
-      dialogue,
-      lip_sync_director_note: sceneData.lip_sync_director_note || '',
+      scene_action_summary: sceneData.scene_action_summary || '',
     };
 
     return fullPrompt;
   }, [callGemini]);
 
   // ============================================================================
-  // MAIN GENERATION FUNCTION
+  // MAIN GENERATION WITH CHARACTER APPROVAL
   // ============================================================================
 
   const generatePromptsV2 = useCallback(async (
     script: string,
     visualStyle: string,
-    onProgress: (prompts: FullScenePrompt[]) => void
+    sceneDuration: number,
+    onProgress: (prompts: FullScenePrompt[]) => void,
+    onCharactersExtracted?: (characters: Record<string, CharacterIdentity>, era: string, scenes: SceneSegment[]) => void
   ): Promise<FullScenePrompt[]> => {
+    isPausedRef.current = false;
+    isCancelledRef.current = false;
+
     setState({
       isGenerating: true,
       currentScene: 0,
@@ -413,32 +494,71 @@ RULES:
     const prompts: FullScenePrompt[] = [];
 
     try {
-      // PHASE 1: Deep story analysis (one expensive call)
-      const analysis = await analyzeStoryDeep(script, visualStyle);
+      // PHASE 1: Deep story analysis
+      const analysis = await analyzeStoryDeep(script, visualStyle, sceneDuration);
       storyAnalysisLock.current = analysis;
+
+      if (isCancelledRef.current) {
+        setState({ isGenerating: false, currentScene: 0, totalScenes: 0, phase: 'idle', error: 'Generation cancelled' });
+        return prompts;
+      }
+
+      // Notify about extracted characters for approval
+      if (onCharactersExtracted) {
+        onCharactersExtracted(analysis.characters, analysis.era, analysis.scenes);
+      }
+
+      // PHASE 1.5: Wait for character approval
+      setState(prev => ({ ...prev, phase: 'awaiting_approval' }));
+
+      const approved = await new Promise<boolean>(resolve => {
+        approvalResolverRef.current = resolve;
+      });
+
+      if (!approved || isCancelledRef.current) {
+        setState({ isGenerating: false, currentScene: 0, totalScenes: 0, phase: 'idle', error: 'Generation cancelled' });
+        return prompts;
+      }
+
+      // Use potentially updated characters from approval
+      const finalAnalysis = storyAnalysisLock.current!;
 
       setState(prev => ({
         ...prev,
-        totalScenes: analysis.scenes.length,
+        totalScenes: finalAnalysis.scenes.length,
         phase: 'generating'
       }));
 
-      // PHASE 2: Generate each scene with stamping
-      for (let i = 0; i < analysis.scenes.length; i++) {
+      // PHASE 2: Generate each scene
+      for (let i = 0; i < finalAnalysis.scenes.length; i++) {
+        if (isCancelledRef.current) {
+          setState({ isGenerating: false, currentScene: 0, totalScenes: 0, phase: 'idle', error: 'Generation cancelled' });
+          return prompts;
+        }
+
+        await waitIfPaused();
+
+        if (isCancelledRef.current) {
+          setState({ isGenerating: false, currentScene: 0, totalScenes: 0, phase: 'idle', error: 'Generation cancelled' });
+          return prompts;
+        }
+
         setState(prev => ({ ...prev, currentScene: i + 1 }));
 
         const scenePrompt = await generateScenePromptFull(
-          analysis.scenes[i],
+          finalAnalysis.scenes[i],
           i,
-          analysis.characters,
-          analysis.era,
-          analysis.visual_style_lock
+          finalAnalysis.characters,
+          finalAnalysis.era,
+          finalAnalysis.visual_style_lock
         );
 
         prompts.push(scenePrompt);
         onProgress([...prompts]);
 
-        // Dynamic rate limit protection based on number of keys
+        // Save progress after each scene
+        saveProgress(script, visualStyle, sceneDuration, finalAnalysis, prompts, i + 1);
+
         const delay = calculateDelay();
         console.log(`Waiting ${delay}ms before next scene (${apiKeys.keys.length} keys)`);
         await new Promise(resolve => setTimeout(resolve, delay));
@@ -452,13 +572,152 @@ RULES:
         error: null
       });
 
+      // Mark project as complete
+      saveProgress(script, visualStyle, sceneDuration, finalAnalysis, prompts, prompts.length, true);
+
       return prompts;
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : 'Generation failed';
       setState(prev => ({ ...prev, isGenerating: false, phase: 'idle', error: errorMessage }));
       throw err;
     }
-  }, [analyzeStoryDeep, generateScenePromptFull, calculateDelay, apiKeys.keys.length]);
+  }, [analyzeStoryDeep, generateScenePromptFull, calculateDelay, apiKeys.keys.length, waitIfPaused]);
+
+  // ============================================================================
+  // CONTINUE FROM SAVED PROGRESS
+  // ============================================================================
+
+  const continueFromProgress = useCallback(async (
+    project: ProjectState,
+    onProgress: (prompts: FullScenePrompt[]) => void
+  ): Promise<FullScenePrompt[]> => {
+    if (!project.storyAnalysis) {
+      throw new Error('No analysis in saved project');
+    }
+
+    isPausedRef.current = false;
+    isCancelledRef.current = false;
+    storyAnalysisLock.current = project.storyAnalysis;
+
+    const prompts = [...project.prompts];
+    const startIndex = project.currentSceneIndex;
+
+    setState({
+      isGenerating: true,
+      currentScene: startIndex,
+      totalScenes: project.storyAnalysis.scenes.length,
+      phase: 'generating',
+      error: null
+    });
+
+    try {
+      for (let i = startIndex; i < project.storyAnalysis.scenes.length; i++) {
+        if (isCancelledRef.current) {
+          setState({ isGenerating: false, currentScene: 0, totalScenes: 0, phase: 'idle', error: 'Generation cancelled' });
+          return prompts;
+        }
+
+        await waitIfPaused();
+
+        if (isCancelledRef.current) {
+          setState({ isGenerating: false, currentScene: 0, totalScenes: 0, phase: 'idle', error: 'Generation cancelled' });
+          return prompts;
+        }
+
+        setState(prev => ({ ...prev, currentScene: i + 1 }));
+
+        const scenePrompt = await generateScenePromptFull(
+          project.storyAnalysis!.scenes[i],
+          i,
+          project.storyAnalysis!.characters,
+          project.storyAnalysis!.era,
+          project.storyAnalysis!.visual_style_lock
+        );
+
+        prompts.push(scenePrompt);
+        onProgress([...prompts]);
+
+        saveProgress(
+          project.script,
+          project.visualStyle,
+          project.sceneDuration,
+          project.storyAnalysis!,
+          prompts,
+          i + 1
+        );
+
+        const delay = calculateDelay();
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
+
+      setState({
+        isGenerating: false,
+        currentScene: 0,
+        totalScenes: 0,
+        phase: 'idle',
+        error: null
+      });
+
+      saveProgress(
+        project.script,
+        project.visualStyle,
+        project.sceneDuration,
+        project.storyAnalysis!,
+        prompts,
+        prompts.length,
+        true
+      );
+
+      return prompts;
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : 'Generation failed';
+      setState(prev => ({ ...prev, isGenerating: false, phase: 'idle', error: errorMessage }));
+      throw err;
+    }
+  }, [generateScenePromptFull, calculateDelay, waitIfPaused]);
+
+  // ============================================================================
+  // SAVE / LOAD PROGRESS
+  // ============================================================================
+
+  const saveProgress = (
+    script: string,
+    visualStyle: string,
+    sceneDuration: number,
+    analysis: StoryAnalysis,
+    prompts: FullScenePrompt[],
+    currentIndex: number,
+    isComplete: boolean = false
+  ) => {
+    const project: ProjectState = {
+      id: 'current',
+      name: 'Current Project',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      script,
+      visualStyle,
+      sceneDuration,
+      storyAnalysis: analysis,
+      prompts,
+      currentSceneIndex: currentIndex,
+      isComplete
+    };
+    localStorage.setItem('scene_weaver_progress', JSON.stringify(project));
+  };
+
+  const loadProgress = useCallback((): ProjectState | null => {
+    const saved = localStorage.getItem('scene_weaver_progress');
+    if (!saved) return null;
+    try {
+      return JSON.parse(saved);
+    } catch {
+      return null;
+    }
+  }, []);
+
+  const clearProgress = useCallback(() => {
+    localStorage.removeItem('scene_weaver_progress');
+  }, []);
 
   // ============================================================================
   // REGENERATE SINGLE SCENE
@@ -512,16 +771,24 @@ RULES:
   }, [generateScenePromptFull]);
 
   // ============================================================================
-  // LEGACY FUNCTIONS (for backwards compatibility)
+  // UPDATE CHARACTERS (for editing after approval)
+  // ============================================================================
+
+  const updateCharacters = useCallback((characters: Record<string, CharacterIdentity>) => {
+    if (storyAnalysisLock.current) {
+      storyAnalysisLock.current.characters = characters;
+    }
+  }, []);
+
+  // ============================================================================
+  // LEGACY FUNCTIONS
   // ============================================================================
 
   const analyzeScript = useCallback(async (script: string): Promise<{ characters: Character[]; era: string; scenes: string[] }> => {
     const analysisPrompt = `Analyze this narrative script and extract:
 1. Main characters with their physical descriptions and roles
 2. Historical era/time period
-3. Divide the script into logical scenes of approximately ${Math.round(WORDS_PER_SECOND * DEFAULT_SCENE_DURATION)} words each (about ${DEFAULT_SCENE_DURATION} seconds of narration)
-
-IMPORTANT: Scene boundaries must respect narrative meaning. Each scene should be a complete narrative unit.
+3. Divide the script into logical scenes of approximately ${Math.round(WORDS_PER_SECOND * DEFAULT_SCENE_DURATION)} words each
 
 Script:
 ${script}
@@ -582,7 +849,6 @@ Return ONLY the JSON, no additional text.`;
     return JSON.parse(jsonMatch[0]);
   }, [callGemini]);
 
-  // Store last analysis for legacy regeneration
   const lastAnalysisRef = useRef<{ characters: Character[]; era: string; scenes: string[] } | null>(null);
   const lastVisualStyleRef = useRef<string>('');
 
@@ -614,7 +880,6 @@ Return ONLY the JSON, no additional text.`;
         prompts.push(scenePrompt);
         onProgress([...prompts]);
 
-        // Dynamic rate limit protection based on number of keys
         const delay = calculateDelay();
         await new Promise(resolve => setTimeout(resolve, delay));
       }
@@ -671,14 +936,24 @@ Return ONLY the JSON, no additional text.`;
     state,
     apiKeys,
     saveApiKeys,
-    // Key rotation utilities
     calculateDelay,
     keyCount: apiKeys.keys.length,
-    // V2 API (new full schema)
+    // Controls
+    pauseGeneration,
+    resumeGeneration,
+    cancelGeneration,
+    approveCharacters,
+    isPaused: isPausedRef.current,
+    // V2 API
     generatePromptsV2,
     regenerateSceneV2,
+    continueFromProgress,
+    updateCharacters,
     storyAnalysis: storyAnalysisLock.current,
-    // Legacy API (backwards compatible)
+    // Save/Load
+    loadProgress,
+    clearProgress,
+    // Legacy API
     generatePrompts,
     regenerateScene,
     lastAnalysis: lastAnalysisRef.current,

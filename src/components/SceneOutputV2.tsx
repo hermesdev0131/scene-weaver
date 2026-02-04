@@ -122,7 +122,6 @@ export function SceneOutputV2({ prompts, onUpdatePrompt, onRegenerateScene, isRe
           {prompts.map((prompt, index) => {
             const isExpanded = expandedScene === index;
             const characterIds = Object.keys(prompt.character_lock);
-            const hasDialogue = prompt.dialogue.length > 0;
 
             return (
               <div
@@ -141,7 +140,7 @@ export function SceneOutputV2({ prompts, onUpdatePrompt, onRegenerateScene, isRe
                           {prompt.background_lock.setting}
                         </p>
                         <p className="text-xs text-muted-foreground">
-                          {prompt.duration_sec}s • {characterIds.length} character{characterIds.length !== 1 ? 's' : ''} • {hasDialogue ? `${prompt.dialogue.length} line${prompt.dialogue.length !== 1 ? 's' : ''}` : 'No dialogue'}
+                          {prompt.duration_sec}s • {characterIds.length} character{characterIds.length !== 1 ? 's' : ''}
                         </p>
                       </div>
                     </div>
@@ -158,13 +157,10 @@ export function SceneOutputV2({ prompts, onUpdatePrompt, onRegenerateScene, isRe
                       ))}
                     </div>
 
-                    {/* Dialogue preview */}
-                    {hasDialogue && (
-                      <div className="text-xs text-foreground/80 italic bg-muted/30 rounded px-2 py-1 mb-2">
-                        "{prompt.dialogue[0].line}"
-                        {prompt.dialogue.length > 1 && (
-                          <span className="text-muted-foreground"> (+{prompt.dialogue.length - 1} more)</span>
-                        )}
+                    {/* Action summary preview */}
+                    {prompt.scene_action_summary && (
+                      <div className="text-xs text-foreground/80 bg-muted/30 rounded px-2 py-1 mb-2">
+                        {prompt.scene_action_summary}
                       </div>
                     )}
 
