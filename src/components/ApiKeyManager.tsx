@@ -9,6 +9,12 @@ interface ApiKeyManagerProps {
   onSave: (keys: string[]) => void;
 }
 
+// Mask API key: show first 4 and last 4 characters
+const maskKey = (key: string): string => {
+  if (key.length <= 12) return '••••••••';
+  return `${key.slice(0, 4)}••••${key.slice(-4)}`;
+};
+
 export function ApiKeyManager({ keys, onSave }: ApiKeyManagerProps) {
   const [localKeys, setLocalKeys] = useState<string[]>(keys.length > 0 ? keys : ['']);
   const [open, setOpen] = useState(false);
@@ -51,6 +57,19 @@ export function ApiKeyManager({ keys, onSave }: ApiKeyManagerProps) {
           <p className="text-sm text-muted-foreground">
             Add multiple API keys for automatic rotation when rate limits are hit.
           </p>
+
+          {/* Show saved keys summary */}
+          {keys.length > 0 && (
+            <div className="bg-muted/50 rounded-lg p-3 space-y-1">
+              <p className="text-xs font-medium text-muted-foreground">Saved Keys ({keys.length}):</p>
+              {keys.map((key, index) => (
+                <div key={index} className="text-xs font-mono text-foreground/70">
+                  {index + 1}. {maskKey(key)}
+                </div>
+              ))}
+            </div>
+          )}
+
           {localKeys.map((key, index) => (
             <div key={index} className="flex gap-2">
               <Input
