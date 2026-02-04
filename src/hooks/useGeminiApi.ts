@@ -259,6 +259,9 @@ RULES:
 
     console.log(`Found ${nameData.characters.length} characters:`, nameData.characters.map(c => c.name).join(', '));
 
+    // Delay before Phase 1B to avoid rate limiting
+    await new Promise(resolve => setTimeout(resolve, 7000));
+
     // STEP 1B: CREATE detailed visual descriptions for identified characters
     const characterList = nameData.characters.map((c, i) => `${i + 1}. ${c.name} (${c.role}) - ${c.importance}`).join('\n');
 
@@ -329,6 +332,9 @@ MANDATORY RULES:
     }
 
     console.log(`Generated descriptions for ${Object.keys(charData.characters).length} characters`);
+
+    // Delay before scene extraction to avoid rate limiting
+    await new Promise(resolve => setTimeout(resolve, 7000));
 
     // STEP 2: Extract scenes with ACTION focus (CHUNKED for long scripts)
     // With short scene durations (4s) and free tier API limits,
@@ -466,8 +472,8 @@ RULES:
             console.error(`Chunk ${i + 1} attempt ${retry + 1} failed:`, lastError.message);
 
             if (retry < MAX_RETRIES - 1) {
-              console.log(`Retrying chunk ${i + 1} in 3 seconds...`);
-              await new Promise(resolve => setTimeout(resolve, 3000));
+              console.log(`Retrying chunk ${i + 1} in 7 seconds...`);
+              await new Promise(resolve => setTimeout(resolve, 7000));
             }
           }
         }
@@ -476,9 +482,9 @@ RULES:
           throw new Error(`Failed to parse scene data from chunk ${i + 1} after ${MAX_RETRIES} attempts`);
         }
 
-        // Delay between chunks to avoid rate limiting (longer for free tier)
+        // Delay between chunks to avoid rate limiting (7s for free tier - matches API suggestion)
         if (i < chunks.length - 1) {
-          await new Promise(resolve => setTimeout(resolve, 3000));
+          await new Promise(resolve => setTimeout(resolve, 7000));
         }
       }
 

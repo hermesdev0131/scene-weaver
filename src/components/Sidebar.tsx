@@ -45,13 +45,13 @@ export function Sidebar({
   const wordsPerScene = sceneDuration * 3;
   const estimatedScenes = Math.max(1, Math.ceil(wordCount / wordsPerScene));
 
-  // Estimate generation time
+  // Estimate generation time (with 7s delays for free tier rate limits)
   const CHUNK_SIZE = 250;
   const estimatedChunks = Math.max(1, Math.ceil(wordCount / CHUNK_SIZE));
-  // Phase 1: Character extraction (~10s) + Scene extraction (~6s per chunk)
-  const phase1Time = 10 + (estimatedChunks * 6);
-  // Phase 2: Scene prompt generation (~5s per scene)
-  const phase2Time = estimatedScenes * 5;
+  // Phase 1: Character extraction (~30s with delays) + Scene extraction (~12s per chunk)
+  const phase1Time = 30 + (estimatedChunks * 12);
+  // Phase 2: Scene prompt generation (~8s per scene with delays)
+  const phase2Time = estimatedScenes * 8;
   const totalTimeSeconds = phase1Time + phase2Time;
   const estimatedMinutes = Math.ceil(totalTimeSeconds / 60);
 
