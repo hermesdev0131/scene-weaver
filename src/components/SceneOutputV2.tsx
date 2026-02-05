@@ -157,10 +157,17 @@ export function SceneOutputV2({ prompts, onUpdatePrompt, onRegenerateScene, isRe
                       ))}
                     </div>
 
+                    {/* Text fragment (narration) - shows exact text this scene represents */}
+                    {prompt.text_fragment && (
+                      <div className="text-xs text-muted-foreground bg-blue-500/5 border-l-2 border-blue-500/30 rounded-r px-2 py-1 mb-2 italic">
+                        "{prompt.text_fragment}"
+                      </div>
+                    )}
+
                     {/* Action summary preview */}
                     {prompt.scene_action_summary && (
                       <div className="text-xs text-foreground/80 bg-muted/30 rounded px-2 py-1 mb-2">
-                        {prompt.scene_action_summary}
+                        ⚡ {prompt.scene_action_summary}
                       </div>
                     )}
 

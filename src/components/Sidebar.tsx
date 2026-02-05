@@ -1,9 +1,47 @@
+import { useMemo } from 'react';
 import { Textarea } from '@/components/ui/textarea';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
 import { Wand2, Loader2, Pause, Play, X, RotateCcw, Trash2 } from 'lucide-react';
 import { GenerationState, ProjectState } from '@/types/prompt';
+
+// Narration speed: 121 WPM (verified from client's audio)
+const WPM = 121;
+const WORDS_PER_SECOND = WPM / 60; // ~2.017 words/sec
+
+// Count scenes using sentence-boundary logic (matches splitScriptDeterministically exactly)
+function countScenesBySentence(script: string, sceneDuration: number): number {
+  if (!script.trim()) return 0;
+
+  const sentences = script.split(/(?<=[.!?])\s+/).filter(s => s.trim());
+  if (sentences.length === 0) return 1;
+
+  let sceneCount = 0;
+  let timeBuffer = 0;
+  let hasContent = false;
+
+  for (const sentence of sentences) {
+    const sentenceWords = sentence.trim().split(/\s+/).filter(w => w).length;
+    const sentenceDuration = sentenceWords / WORDS_PER_SECOND;
+    timeBuffer += sentenceDuration;
+    hasContent = true;
+
+    // Only flush ONCE per sentence (matches splitScriptDeterministically which resets currentFragment after flush)
+    if (timeBuffer >= sceneDuration && hasContent) {
+      sceneCount++;
+      timeBuffer -= sceneDuration;
+      hasContent = false;
+    }
+  }
+
+  // Count remaining text as final scene
+  if (hasContent) {
+    sceneCount++;
+  }
+
+  return Math.max(1, sceneCount);
+}
 
 interface SidebarProps {
   script: string;
@@ -41,19 +79,13 @@ export function Sidebar({
   onDismissProgress,
 }: SidebarProps) {
   const wordCount = script.trim().split(/\s+/).filter(w => w).length;
-  // Estimate based on ~3 words per second of narration
-  const wordsPerScene = sceneDuration * 3;
-  const estimatedScenes = Math.max(1, Math.ceil(wordCount / wordsPerScene));
+  const totalDurationSec = wordCount / WORDS_PER_SECOND;
 
-  // Estimate generation time (with 12s delays for free tier rate limits)
-  const CHUNK_SIZE = 250;
-  const estimatedChunks = Math.max(1, Math.ceil(wordCount / CHUNK_SIZE));
-  // Phase 1: Character extraction (~40s with delays) + Scene extraction (~17s per chunk)
-  const phase1Time = 40 + (estimatedChunks * 17);
-  // Phase 2: Scene prompt generation (~12s per scene with delays)
-  const phase2Time = estimatedScenes * 12;
-  const totalTimeSeconds = phase1Time + phase2Time;
-  const estimatedMinutes = Math.ceil(totalTimeSeconds / 60);
+  // Use sentence-boundary counting for accurate scene estimate (matches actual splitting logic)
+  const estimatedScenes = useMemo(
+    () => countScenesBySentence(script, sceneDuration),
+    [script, sceneDuration]
+  );
 
   return (
     <aside className="w-80 min-w-80 bg-sidebar border-r border-sidebar-border flex flex-col h-full">
@@ -80,7 +112,7 @@ export function Sidebar({
             className="min-h-[300px] bg-sidebar-accent border-sidebar-border text-sidebar-foreground placeholder:text-muted-foreground resize-none"
           />
           <p className="text-xs text-muted-foreground">
-            {wordCount} words • ~{estimatedScenes} scenes • ~{estimatedMinutes} min
+            {wordCount} words • ~{estimatedScenes} scenes • {Math.floor(totalDurationSec / 60)}m {Math.round(totalDurationSec % 60)}s audio
           </p>
         </div>
 

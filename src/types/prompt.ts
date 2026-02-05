@@ -40,6 +40,18 @@ export interface CharacterPerformance {
 // Combined in final output (identity + performance)
 export type CharacterLock = CharacterIdentity & CharacterPerformance;
 
+// Character state tracking through timeline (alive/dead/wounded/absent)
+export type CharacterStatus = 'alive' | 'dead' | 'wounded' | 'absent' | 'unknown';
+
+export interface CharacterState {
+  status: CharacterStatus;
+  changedAtScene: number; // Scene index where state changed
+  note?: string; // Optional note about the state change (e.g., "killed by CHAR_B")
+}
+
+// Track all characters' states at any point in the story
+export type CharacterStateMap = Record<string, CharacterState>;
+
 // ============================================================================
 // SCENE STRUCTURE TYPES
 // ============================================================================
@@ -72,6 +84,8 @@ export interface FullScenePrompt {
   scene_id: string;
   duration_sec: number;
   visual_style: string;
+  // The exact narration text this scene represents (deterministically assigned)
+  text_fragment: string;
   character_lock: Record<string, CharacterLock>;
   background_lock: BackgroundLock;
   camera: Camera;
@@ -89,6 +103,12 @@ export interface SceneSegment {
   duration_sec: number;
   characters_present: string[];  // CHAR_A, CHAR_B, etc.
   action_hint: string;           // Brief action description for this segment
+  // State changes that occur IN this scene (e.g., character dies, gets wounded)
+  state_changes?: Array<{
+    character_id: string;
+    new_status: CharacterStatus;
+    note?: string;
+  }>;
 }
 
 export interface StoryAnalysis {
@@ -96,6 +116,8 @@ export interface StoryAnalysis {
   era: string;
   visual_style_lock: string;
   scenes: SceneSegment[];
+  // Track character states through the timeline
+  characterStates?: CharacterStateMap;
 }
 
 // ============================================================================
