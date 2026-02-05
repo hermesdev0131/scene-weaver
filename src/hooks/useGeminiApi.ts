@@ -781,9 +781,9 @@ MANDATORY RULES:
         // Save progress after each scene
         saveProgress(script, visualStyle, sceneDuration, finalAnalysis, prompts, i + 1);
 
-        const delay = calculateDelay();
-        console.log(`Waiting ${delay}ms before next scene (${apiKeys.keys.length} keys)`);
-        await new Promise(resolve => setTimeout(resolve, delay));
+        // Fixed 12s delay for free tier rate limits (don't use calculateDelay which is too fast)
+        console.log(`Waiting 12s before next scene...`);
+        await new Promise(resolve => setTimeout(resolve, 12000));
       }
 
       setState({
@@ -803,7 +803,7 @@ MANDATORY RULES:
       setState(prev => ({ ...prev, isGenerating: false, phase: 'idle', error: errorMessage }));
       throw err;
     }
-  }, [analyzeStoryDeep, generateScenePromptFull, calculateDelay, apiKeys.keys.length, waitIfPaused]);
+  }, [analyzeStoryDeep, generateScenePromptFull, apiKeys.keys.length, waitIfPaused]);
 
   // ============================================================================
   // CONTINUE FROM SAVED PROGRESS
@@ -868,8 +868,8 @@ MANDATORY RULES:
           i + 1
         );
 
-        const delay = calculateDelay();
-        await new Promise(resolve => setTimeout(resolve, delay));
+        // Fixed 12s delay for free tier rate limits
+        await new Promise(resolve => setTimeout(resolve, 12000));
       }
 
       setState({
@@ -896,7 +896,7 @@ MANDATORY RULES:
       setState(prev => ({ ...prev, isGenerating: false, phase: 'idle', error: errorMessage }));
       throw err;
     }
-  }, [generateScenePromptFull, calculateDelay, waitIfPaused]);
+  }, [generateScenePromptFull, waitIfPaused]);
 
   // ============================================================================
   // SAVE / LOAD PROGRESS
