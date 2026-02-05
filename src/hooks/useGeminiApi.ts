@@ -38,7 +38,15 @@ export function useGeminiApi() {
 
   const [apiKeys, setApiKeys] = useState<ApiKeyConfig>(() => {
     const stored = localStorage.getItem('gemini_api_keys');
-    return stored ? JSON.parse(stored) : { keys: [], currentIndex: 0 };
+    if (stored) {
+      const parsed = JSON.parse(stored);
+      // Migrate from old format (keys array) to new format (freeKeys + paidKey)
+      if (parsed.keys && !parsed.freeKeys) {
+        return { freeKeys: parsed.keys, paidKey: null, currentIndex: 0 };
+      }
+      return parsed;
+    }
+    return { freeKeys: [], paidKey: null, currentIndex: 0 };
   });
 
   // Locks - set once during analysis, never regenerated
@@ -107,27 +115,29 @@ export function useGeminiApi() {
 
   const callCountRef = useRef(0);
 
-  const saveApiKeys = useCallback((keys: string[]) => {
-    const config = { keys, currentIndex: 0 };
+  const saveApiKeys = useCallback((config: ApiKeyConfig) => {
     setApiKeys(config);
     localStorage.setItem('gemini_api_keys', JSON.stringify(config));
     callCountRef.current = 0;
   }, []);
 
-  const getNextKey = useCallback((): { key: string; index: number } => {
-    if (apiKeys.keys.length === 0) {
-      throw new Error('No API keys configured');
+  const getNextFreeKey = useCallback((): { key: string; index: number } | null => {
+    if (apiKeys.freeKeys.length === 0) {
+      return null;
     }
-    const index = callCountRef.current % apiKeys.keys.length;
+    const index = callCountRef.current % apiKeys.freeKeys.length;
     callCountRef.current++;
-    return { key: apiKeys.keys[index], index };
-  }, [apiKeys.keys]);
+    return { key: apiKeys.freeKeys[index], index };
+  }, [apiKeys.freeKeys]);
 
   const calculateDelay = useCallback((): number => {
-    const numKeys = apiKeys.keys.length;
+    const numKeys = apiKeys.freeKeys.length;
     if (numKeys === 0) return 6500;
     return Math.max(300, Math.ceil(6500 / numKeys));
-  }, [apiKeys.keys.length]);
+  }, [apiKeys.freeKeys.length]);
+
+  // Check if we have any usable keys
+  const hasAnyKeys = apiKeys.freeKeys.length > 0 || apiKeys.paidKey !== null;
 
   // ============================================================================
   // GEMINI API CALL
@@ -150,26 +160,23 @@ export function useGeminiApi() {
     usePro: boolean = false,
     maxTokens: number = 4096
   ): Promise<string> => {
-    if (apiKeys.keys.length === 0) {
+    const hasFreeKeys = apiKeys.freeKeys.length > 0;
+    const hasPaidKey = apiKeys.paidKey !== null;
+
+    if (!hasFreeKeys && !hasPaidKey) {
       throw new Error('No API keys configured');
     }
 
     const url = usePro ? GEMINI_PRO_URL : GEMINI_API_URL;
     let lastError: Error | null = null;
     let lastRetryDelay = 60000; // Default 60s
-    const triedIndices = new Set<number>();
 
-    const { key: firstKey, index: firstIndex } = getNextKey();
-    let currentKey = firstKey;
-    let currentIndex = firstIndex;
-
-    // First pass: try all keys without waiting
-    while (triedIndices.size < apiKeys.keys.length) {
-      triedIndices.add(currentIndex);
-      console.log(`Using API key ${currentIndex + 1}/${apiKeys.keys.length} (call #${callCountRef.current})`);
+    // Helper to make API call
+    const makeApiCall = async (key: string, keyLabel: string): Promise<{ success: boolean; data?: string; retryable: boolean; retryDelay?: number }> => {
+      console.log(`Using ${keyLabel} (call #${callCountRef.current})`);
 
       try {
-        const response = await fetch(`${url}?key=${currentKey}`, {
+        const response = await fetch(`${url}?key=${key}`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -185,19 +192,8 @@ export function useGeminiApi() {
           const error = await response.json();
           if (response.status === 429 || response.status === 403) {
             const errorMsg = error.error?.message || 'Rate limited';
-            console.warn(`Key ${currentIndex + 1} rate limited: ${errorMsg}`);
-            lastError = new Error(`API key ${currentIndex + 1} failed: ${errorMsg}`);
-            lastRetryDelay = parseRetryDelay(errorMsg);
-
-            for (let i = 0; i < apiKeys.keys.length; i++) {
-              const nextIdx = (currentIndex + 1 + i) % apiKeys.keys.length;
-              if (!triedIndices.has(nextIdx)) {
-                currentIndex = nextIdx;
-                currentKey = apiKeys.keys[nextIdx];
-                break;
-              }
-            }
-            continue;
+            console.warn(`${keyLabel} rate limited: ${errorMsg}`);
+            return { success: false, retryable: true, retryDelay: parseRetryDelay(errorMsg) };
           }
           throw new Error(error.error?.message || 'API request failed');
         }
@@ -209,53 +205,110 @@ export function useGeminiApi() {
           console.warn('Gemini response may be incomplete. Finish reason:', finishReason);
         }
 
-        return data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+        return { success: true, data: data.candidates?.[0]?.content?.parts?.[0]?.text || '', retryable: false };
       } catch (err) {
         lastError = err instanceof Error ? err : new Error('Unknown error');
-        for (let i = 0; i < apiKeys.keys.length; i++) {
-          const nextIdx = (currentIndex + 1 + i) % apiKeys.keys.length;
-          if (!triedIndices.has(nextIdx)) {
-            currentIndex = nextIdx;
-            currentKey = apiKeys.keys[nextIdx];
-            break;
+        return { success: false, retryable: false };
+      }
+    };
+
+    // HYBRID MODE: If paid key exists, try free keys first, then instant fallback to paid
+    if (hasPaidKey) {
+      // Try all free keys first (if any)
+      if (hasFreeKeys) {
+        const triedIndices = new Set<number>();
+        let currentIndex = callCountRef.current % apiKeys.freeKeys.length;
+        callCountRef.current++;
+
+        while (triedIndices.size < apiKeys.freeKeys.length) {
+          triedIndices.add(currentIndex);
+          const result = await makeApiCall(
+            apiKeys.freeKeys[currentIndex],
+            `free key ${currentIndex + 1}/${apiKeys.freeKeys.length}`
+          );
+
+          if (result.success) {
+            return result.data!;
           }
+
+          if (result.retryDelay) {
+            lastRetryDelay = result.retryDelay;
+          }
+
+          // Move to next free key
+          for (let i = 0; i < apiKeys.freeKeys.length; i++) {
+            const nextIdx = (currentIndex + 1 + i) % apiKeys.freeKeys.length;
+            if (!triedIndices.has(nextIdx)) {
+              currentIndex = nextIdx;
+              break;
+            }
+          }
+        }
+
+        console.log('All free keys exhausted. Using paid key as fallback (instant, no waiting)...');
+      }
+
+      // Instant fallback to paid key - no waiting!
+      const paidResult = await makeApiCall(apiKeys.paidKey!, 'paid key (fallback)');
+      if (paidResult.success) {
+        return paidResult.data!;
+      }
+
+      throw new Error(`All keys failed including paid fallback. Last error: ${lastError?.message}`);
+    }
+
+    // FREE-ONLY MODE: Use only free keys with delays and retries
+    const triedIndices = new Set<number>();
+    let currentIndex = callCountRef.current % apiKeys.freeKeys.length;
+    callCountRef.current++;
+
+    // First pass: try all free keys without waiting
+    while (triedIndices.size < apiKeys.freeKeys.length) {
+      triedIndices.add(currentIndex);
+      const result = await makeApiCall(
+        apiKeys.freeKeys[currentIndex],
+        `free key ${currentIndex + 1}/${apiKeys.freeKeys.length}`
+      );
+
+      if (result.success) {
+        return result.data!;
+      }
+
+      if (result.retryDelay) {
+        lastRetryDelay = result.retryDelay;
+      }
+
+      // Move to next free key
+      for (let i = 0; i < apiKeys.freeKeys.length; i++) {
+        const nextIdx = (currentIndex + 1 + i) % apiKeys.freeKeys.length;
+        if (!triedIndices.has(nextIdx)) {
+          currentIndex = nextIdx;
+          break;
         }
       }
     }
 
-    // All keys failed - wait for the suggested retry time and try once more
-    console.log(`All keys rate limited. Waiting ${lastRetryDelay / 1000}s before retry...`);
+    // All free keys failed - wait for the suggested retry time and try once more
+    console.log(`All free keys rate limited. Waiting ${lastRetryDelay / 1000}s before retry...`);
     await new Promise(resolve => setTimeout(resolve, lastRetryDelay));
 
-    // Reset and try one more time with the first key
+    // Retry with next free key
     console.log('Retrying after rate limit cooldown...');
-    const { key: retryKey, index: retryIndex } = getNextKey();
-    console.log(`Using API key ${retryIndex + 1}/${apiKeys.keys.length} (retry after cooldown)`);
+    const retryIndex = callCountRef.current % apiKeys.freeKeys.length;
+    callCountRef.current++;
+    console.log(`Using free key ${retryIndex + 1}/${apiKeys.freeKeys.length} (retry after cooldown)`);
 
-    try {
-      const response = await fetch(`${url}?key=${retryKey}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: {
-            temperature: 0.7,
-            maxOutputTokens: maxTokens,
-          },
-        }),
-      });
+    const retryResult = await makeApiCall(
+      apiKeys.freeKeys[retryIndex],
+      `free key ${retryIndex + 1}/${apiKeys.freeKeys.length} (retry)`
+    );
 
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.error?.message || 'API request failed after retry');
-      }
-
-      const data = await response.json();
-      return data.candidates?.[0]?.content?.parts?.[0]?.text || '';
-    } catch (err) {
-      throw new Error(`All API keys failed after retry. Last error: ${lastError?.message}`);
+    if (retryResult.success) {
+      return retryResult.data!;
     }
-  }, [apiKeys.keys, getNextKey]);
+
+    throw new Error(`All free API keys failed after retry. Last error: ${lastError?.message}`);
+  }, [apiKeys.freeKeys, apiKeys.paidKey]);
 
   // ============================================================================
   // PHASE 1: DEEP STORY ANALYSIS (with detailed character extraction)
@@ -803,7 +856,7 @@ MANDATORY RULES:
       setState(prev => ({ ...prev, isGenerating: false, phase: 'idle', error: errorMessage }));
       throw err;
     }
-  }, [analyzeStoryDeep, generateScenePromptFull, apiKeys.keys.length, waitIfPaused]);
+  }, [analyzeStoryDeep, generateScenePromptFull, apiKeys.freeKeys.length, apiKeys.paidKey, waitIfPaused]);
 
   // ============================================================================
   // CONTINUE FROM SAVED PROGRESS
@@ -1159,7 +1212,8 @@ Return ONLY the JSON, no additional text.`;
     apiKeys,
     saveApiKeys,
     calculateDelay,
-    keyCount: apiKeys.keys.length,
+    keyCount: apiKeys.freeKeys.length + (apiKeys.paidKey ? 1 : 0),
+    hasAnyKeys: apiKeys.freeKeys.length > 0 || apiKeys.paidKey !== null,
     // Controls
     pauseGeneration,
     resumeGeneration,

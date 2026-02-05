@@ -37,7 +37,8 @@ const Index = () => {
     approveCharacters,
     loadProgress,
     clearProgress,
-    continueFromProgress
+    continueFromProgress,
+    hasAnyKeys
   } = useGeminiApi();
 
   // Saved progress state
@@ -57,7 +58,7 @@ const Index = () => {
       return;
     }
 
-    if (apiKeys.keys.length === 0) {
+    if (!hasAnyKeys) {
       toast.error('Please configure at least one Gemini API key');
       return;
     }
@@ -113,7 +114,7 @@ const Index = () => {
   const handleContinueProgress = async () => {
     if (!savedProgress) return;
 
-    if (apiKeys.keys.length === 0) {
+    if (!hasAnyKeys) {
       toast.error('Please configure at least one Gemini API key');
       return;
     }
@@ -157,7 +158,7 @@ const Index = () => {
   };
 
   const handleRegenerateScene = async (index: number) => {
-    if (apiKeys.keys.length === 0) {
+    if (!hasAnyKeys) {
       toast.error('Please configure at least one Gemini API key');
       return;
     }
@@ -188,7 +189,7 @@ const Index = () => {
         onResume={resumeGeneration}
         onCancel={cancelGeneration}
         state={state}
-        hasApiKeys={apiKeys.keys.length > 0}
+        hasApiKeys={hasAnyKeys}
         savedProgress={savedProgress}
         onContinueProgress={handleContinueProgress}
         onDismissProgress={handleDismissProgress}
@@ -205,7 +206,7 @@ const Index = () => {
               }
             </p>
           </div>
-          <ApiKeyManager keys={apiKeys.keys} onSave={saveApiKeys} />
+          <ApiKeyManager apiKeys={apiKeys} onSave={saveApiKeys} />
         </header>
 
         <div className="flex flex-1 overflow-hidden">

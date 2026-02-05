@@ -111,8 +111,11 @@ export interface GenerationState {
 }
 
 export interface ApiKeyConfig {
-  keys: string[];
+  freeKeys: string[];
+  paidKey: string | null;
   currentIndex: number;
+  // Legacy field for migration
+  keys?: string[];
 }
 
 // ============================================================================
