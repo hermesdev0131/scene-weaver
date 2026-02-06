@@ -159,6 +159,184 @@ export function useGeminiApi() {
   const PAID_PARALLEL_BATCH_SIZE = 5;
 
   // ============================================================================
+  // HELPER: Replace CHAR_IDs with real character names in text
+  // ============================================================================
+
+  const replaceCharIdsWithNames = (
+    text: string,
+    characterIdentities: Record<string, CharacterIdentity>
+  ): string => {
+    let result = text;
+    for (const [charId, identity] of Object.entries(characterIdentities)) {
+      if (identity.name) {
+        // Replace CHAR_A, CHAR_B, etc. with actual names
+        result = result.replace(new RegExp(charId, 'g'), identity.name);
+      }
+    }
+    return result;
+  };
+
+  // ============================================================================
+  // HELPER: Detect if Gemini sanitized/corrupted the scene content
+  // ============================================================================
+
+  // Keywords indicating violent/distressing content in narration
+  const DISTRESS_NARRATION_KEYWORDS = [
+    // Spanish violence/death keywords
+    'metieron dentro', 'gritaba', 'gritando', 'gritos', 'alaridos',
+    'fuego', 'quemarse', 'quemaba', 'ardía', 'calentarse', 'caliente',
+    'morir', 'murió', 'muerte', 'matar', 'mataron',
+    'dolor', 'agonía', 'sufrimiento', 'tortura', 'torturado',
+    'encendieron', 'llamas', 'bronce caliente',
+    'dentro del toro', 'interior del toro', 'metieron',
+    'arrastraron', 'arrastrando', 'forzaron',
+    'ejecutar', 'ejecutaron', 'ejecución',
+    'suplicaba', 'suplicando', 'súplicas',
+    // English equivalents (in case of mixed content)
+    'screaming', 'burning', 'fire', 'death', 'torture', 'agony',
+    'forced inside', 'dragged', 'executed'
+  ];
+
+  // Keywords indicating Gemini sanitized to a safe scene
+  const SANITIZED_SCENE_KEYWORDS = [
+    // Workshop/craft scenes (wrong for torture)
+    'workshop', 'taller', 'working', 'trabajando',
+    'crafting', 'examining', 'examinando',
+    'stands by', 'de pie junto a', 'standing beside',
+    'his work', 'su trabajo', 'workbench', 'banco de trabajo',
+    // Casual actions (wrong for distress)
+    'gesturing intently', 'gesticulando',
+    'calmly', 'tranquilamente', 'peacefully',
+    'observing', 'observando', 'watching',
+    // Wrong locations for confinement scenes
+    'late afternoon', 'tarde', 'evening workshop',
+    'pauses his work', 'detiene su trabajo'
+  ];
+
+  const detectSanitizedScene = (
+    narrationText: string,
+    generatedSetting: string,
+    generatedActionSummary: string,
+    _actionHint: string // Reserved for future enhanced validation
+  ): { isSanitized: boolean; reason: string } => {
+    const narrationLower = narrationText.toLowerCase();
+    const settingLower = generatedSetting.toLowerCase();
+    const actionLower = generatedActionSummary.toLowerCase();
+
+    // Check if narration contains distressing content
+    const hasDistressNarration = DISTRESS_NARRATION_KEYWORDS.some(
+      keyword => narrationLower.includes(keyword.toLowerCase())
+    );
+
+    if (!hasDistressNarration) {
+      return { isSanitized: false, reason: '' };
+    }
+
+    // Check if generated scene was sanitized to a safe version
+    const hasSanitizedSetting = SANITIZED_SCENE_KEYWORDS.some(
+      keyword => settingLower.includes(keyword.toLowerCase())
+    );
+
+    const hasSanitizedAction = SANITIZED_SCENE_KEYWORDS.some(
+      keyword => actionLower.includes(keyword.toLowerCase())
+    );
+
+    if (hasSanitizedSetting || hasSanitizedAction) {
+      const reasons: string[] = [];
+      if (hasSanitizedSetting) reasons.push('setting mismatch');
+      if (hasSanitizedAction) reasons.push('action mismatch');
+      return {
+        isSanitized: true,
+        reason: `Narration suggests distress but scene shows safe context (${reasons.join(', ')})`
+      };
+    }
+
+    return { isSanitized: false, reason: '' };
+  };
+
+  // ============================================================================
+  // HELPER: Build local scene when Gemini fails or sanitizes content
+  // ============================================================================
+
+  const buildLocalScene = (
+    sceneId: string,
+    sceneSegment: SceneSegment,
+    presentCharacters: string[],
+    characterIdentities: Record<string, CharacterIdentity>,
+    visualStyleLock: string,
+    previousScenePrompt: FullScenePrompt | undefined,
+    marker: '[BLOCKED]' | '[SANITIZED]'
+  ): FullScenePrompt => {
+    console.log(`Scene ${sceneId}: Building locally with ${marker} marker`);
+
+    // Replace CHAR_IDs with real names in action_hint
+    const processedActionHint = replaceCharIdsWithNames(
+      sceneSegment.action_hint || 'Character performs scene action',
+      characterIdentities
+    );
+
+    // Build character lock with minimal performance data
+    const characterLock: Record<string, CharacterLock> = {};
+    for (const charId of presentCharacters) {
+      const identity = characterIdentities[charId];
+      if (identity) {
+        characterLock[charId] = {
+          ...identity,
+          position: 'Continuation from previous scene',
+          orientation: 'Facing toward action',
+          pose: 'Dynamic pose matching scene context',
+          expression: 'Intense, matching scene emotion',
+          action_flow: {
+            pre_action: 'Character prepares for action',
+            main_action: processedActionHint,
+            post_action: 'Character reacts to action outcome',
+          },
+        };
+      }
+    }
+
+    // Inherit background from previous scene for visual continuity, or use generic defaults
+    const inheritedBackground = previousScenePrompt?.background_lock || {
+      setting: 'Interior chamber',
+      scenery: 'Dramatic scene environment',
+      lighting: 'Dramatic lighting with shadows'
+    };
+
+    // Inherit camera framing from previous scene or use default
+    const inheritedCamera = previousScenePrompt?.camera || {
+      framing: 'Medium shot',
+      angle: 'Eye level',
+      movement: 'Static',
+      focus: 'Subject in focus'
+    };
+
+    // Build action summary with marker
+    const markedActionSummary = replaceCharIdsWithNames(
+      `${marker} ${sceneSegment.action_hint || 'Scene action - requires manual review'}`,
+      characterIdentities
+    );
+
+    const localPrompt: FullScenePrompt = {
+      scene_id: sceneId,
+      duration_sec: sceneSegment.duration_sec,
+      visual_style: visualStyleLock,
+      text_fragment: sceneSegment.text,
+      character_lock: characterLock,
+      background_lock: inheritedBackground,
+      camera: inheritedCamera,
+      foley_and_ambience: previousScenePrompt?.foley_and_ambience || {
+        ambience: ['ambient environment sounds'],
+        fx: ['action sounds'],
+        music: 'Tense dramatic score'
+      },
+      scene_action_summary: markedActionSummary,
+    };
+
+    console.log(`Scene ${sceneId}: Built locally. Background: ${inheritedBackground.setting}`);
+    return localPrompt;
+  };
+
+  // ============================================================================
   // DETERMINISTIC TEXT SPLITTING (Math-based, not AI-decided)
   // ============================================================================
 
@@ -891,19 +1069,66 @@ MANDATORY RULES:
           const performance = sceneData.character_performances?.[charId];
 
           if (identity && performance) {
+            // Replace CHAR_IDs with real names in all performance text fields
             characterLock[charId] = {
               ...identity,
-              position: performance.position || '',
-              orientation: performance.orientation || '',
-              pose: performance.pose || '',
-              expression: performance.expression || '',
+              position: replaceCharIdsWithNames(performance.position || '', characterIdentities),
+              orientation: replaceCharIdsWithNames(performance.orientation || '', characterIdentities),
+              pose: replaceCharIdsWithNames(performance.pose || '', characterIdentities),
+              expression: replaceCharIdsWithNames(performance.expression || '', characterIdentities),
               action_flow: {
-                pre_action: performance.action_flow?.pre_action || '',
-                main_action: performance.action_flow?.main_action || '',
-                post_action: performance.action_flow?.post_action || '',
+                pre_action: replaceCharIdsWithNames(performance.action_flow?.pre_action || '', characterIdentities),
+                main_action: replaceCharIdsWithNames(performance.action_flow?.main_action || '', characterIdentities),
+                post_action: replaceCharIdsWithNames(performance.action_flow?.post_action || '', characterIdentities),
               },
             };
           }
+        }
+
+        // Replace CHAR_IDs with real names in text fields
+        const actionSummary = replaceCharIdsWithNames(
+          sceneData.scene_action_summary || '',
+          characterIdentities
+        );
+
+        // Also replace in background_lock setting (e.g., "CHAR_B's workshop" → "Perilo's workshop")
+        const backgroundLock = sceneData.background_lock || { setting: '', scenery: '', lighting: '' };
+        const processedBackground: BackgroundLock = {
+          setting: replaceCharIdsWithNames(backgroundLock.setting || '', characterIdentities),
+          scenery: replaceCharIdsWithNames(backgroundLock.scenery || '', characterIdentities),
+          lighting: backgroundLock.lighting || '',
+        };
+
+        // Replace CHAR_IDs in camera fields (e.g., "Focus on CHAR_A" → "Focus on Falaris")
+        const cameraData = sceneData.camera || { framing: '', angle: '', movement: '', focus: '' };
+        const processedCamera: Camera = {
+          framing: cameraData.framing || '',
+          angle: cameraData.angle || '',
+          movement: replaceCharIdsWithNames(cameraData.movement || '', characterIdentities),
+          focus: replaceCharIdsWithNames(cameraData.focus || '', characterIdentities),
+        };
+
+        // Check if Gemini sanitized the scene (replaced violent content with safe content)
+        const sanitizationCheck = detectSanitizedScene(
+          sceneSegment.text,
+          processedBackground.setting,
+          actionSummary,
+          sceneSegment.action_hint || ''
+        );
+
+        // If sanitized, DISCARD Gemini's output entirely and use local builder
+        if (sanitizationCheck.isSanitized) {
+          console.warn(`Scene ${sceneId}: SANITIZED DETECTED - ${sanitizationCheck.reason}`);
+          console.warn(`Discarding Gemini output and using local builder with [SANITIZED] marker`);
+          return buildLocalScene(
+            sceneId,
+            sceneSegment,
+            presentCharacters,
+            characterIdentities,
+            visualStyleLock,
+            previousScenePrompt,
+            '[SANITIZED]'
+          );
         }
 
         const fullPrompt: FullScenePrompt = {
@@ -912,10 +1137,10 @@ MANDATORY RULES:
           visual_style: visualStyleLock,
           text_fragment: sceneSegment.text,
           character_lock: characterLock,
-          background_lock: sceneData.background_lock || { setting: '', scenery: '', lighting: '' },
-          camera: sceneData.camera || { framing: '', angle: '', movement: '', focus: '' },
+          background_lock: processedBackground,
+          camera: processedCamera,
           foley_and_ambience: sceneData.foley_and_ambience || { ambience: [], fx: [], music: '' },
-          scene_action_summary: sceneData.scene_action_summary || '',
+          scene_action_summary: actionSummary,
         };
 
         return fullPrompt;
@@ -939,162 +1164,18 @@ MANDATORY RULES:
       }
     }
 
-    // All retries exhausted with full prompt - try simplified fallback for content blocks
-    if (lastError?.message.includes('safety filter') || lastError?.message.includes('PROHIBITED')) {
-      console.log(`Scene ${sceneId}: Trying simplified fallback prompt to bypass content filter...`);
-
-      // Simplified prompt with minimal context - no detailed character descriptions or physical actions
-      const simplifiedPrompt = `Generate a basic video scene prompt for this narration.
-
-NARRATION: "${sceneSegment.text}"
-DURATION: ${sceneSegment.duration_sec} seconds
-STYLE: ${visualStyleLock.substring(0, 200)}
-
-Return JSON with this structure:
-{
-  "character_performances": {
-    "${presentCharacters[0] || 'CHAR_A'}": {
-      "position": "center frame",
-      "orientation": "facing camera",
-      "pose": "standing",
-      "expression": "neutral",
-      "action_flow": {
-        "pre_action": "Character prepares",
-        "main_action": "Character performs main action",
-        "post_action": "Character settles"
-      }
-    }
-  },
-  "background_lock": {
-    "setting": "Interior/Exterior location",
-    "scenery": "Basic environment",
-    "lighting": "Natural lighting"
-  },
-  "camera": {
-    "framing": "Medium shot",
-    "angle": "Eye level",
-    "movement": "Static",
-    "focus": "Subject in focus"
-  },
-  "foley_and_ambience": {
-    "ambience": ["ambient sounds"],
-    "fx": ["action sounds"],
-    "music": "background score"
-  },
-  "scene_action_summary": "Brief action description"
-}
-
-Return ONLY valid JSON.`;
-
-      try {
-        const fallbackResponse = await callGemini(simplifiedPrompt, false, 8192);
-
-        let jsonStr = fallbackResponse;
-        const codeBlock = fallbackResponse.match(/```(?:json)?\s*([\s\S]*?)```/);
-        if (codeBlock) {
-          jsonStr = codeBlock[1].trim();
-        }
-
-        const jsonMatch = jsonStr.match(/\{[\s\S]*\}/);
-        if (jsonMatch) {
-          const sceneData = JSON.parse(jsonMatch[0]);
-          console.log(`Scene ${sceneId}: Simplified fallback succeeded!`);
-
-          // Build response with available data
-          const characterLock: Record<string, CharacterLock> = {};
-          for (const charId of presentCharacters) {
-            const identity = characterIdentities[charId];
-            const performance = sceneData.character_performances?.[charId];
-            if (identity) {
-              characterLock[charId] = {
-                ...identity,
-                position: performance?.position || 'center frame',
-                orientation: performance?.orientation || 'facing camera',
-                pose: performance?.pose || 'standing',
-                expression: performance?.expression || 'neutral',
-                action_flow: {
-                  pre_action: performance?.action_flow?.pre_action || 'Character prepares',
-                  main_action: performance?.action_flow?.main_action || 'Character performs action',
-                  post_action: performance?.action_flow?.post_action || 'Character settles',
-                },
-              };
-            }
-          }
-
-          return {
-            scene_id: sceneId,
-            duration_sec: sceneSegment.duration_sec,
-            visual_style: visualStyleLock,
-            text_fragment: sceneSegment.text,
-            character_lock: characterLock,
-            background_lock: sceneData.background_lock || { setting: 'Location', scenery: 'Environment', lighting: 'Natural' },
-            camera: sceneData.camera || { framing: 'Medium shot', angle: 'Eye level', movement: 'Static', focus: 'Subject' },
-            foley_and_ambience: sceneData.foley_and_ambience || { ambience: ['ambient'], fx: ['action'], music: 'score' },
-            scene_action_summary: sceneData.scene_action_summary || `[Fallback] Scene ${sceneId} action`,
-          };
-        }
-      } catch (fallbackErr) {
-        console.error(`Scene ${sceneId}: Simplified fallback also failed:`, fallbackErr);
-      }
-    }
-
-    // ALL ATTEMPTS FAILED - Build scene locally using previous scene for continuity
-    // This handles genuinely blocked content (e.g., torture scenes) that Gemini will never generate
-    console.log(`Scene ${sceneId}: All Gemini attempts failed. Building locally with previous scene inheritance...`);
-
-    // Build character lock with minimal performance data
-    const characterLock: Record<string, CharacterLock> = {};
-    for (const charId of presentCharacters) {
-      const identity = characterIdentities[charId];
-      if (identity) {
-        characterLock[charId] = {
-          ...identity,
-          position: 'Continuation from previous scene',
-          orientation: 'Facing toward action',
-          pose: 'Dynamic pose matching scene context',
-          expression: 'Intense, matching scene emotion',
-          action_flow: {
-            pre_action: 'Character prepares for action',
-            main_action: sceneSegment.action_hint || 'Character performs scene action',
-            post_action: 'Character reacts to action outcome',
-          },
-        };
-      }
-    }
-
-    // Inherit background from previous scene for visual continuity, or use generic defaults
-    const inheritedBackground = previousScenePrompt?.background_lock || {
-      setting: 'Interior chamber',
-      scenery: 'Dramatic scene environment',
-      lighting: 'Dramatic lighting with shadows'
-    };
-
-    // Inherit camera framing from previous scene or use default
-    const inheritedCamera = previousScenePrompt?.camera || {
-      framing: 'Medium shot',
-      angle: 'Eye level',
-      movement: 'Static',
-      focus: 'Subject in focus'
-    };
-
-    const blockedPrompt: FullScenePrompt = {
-      scene_id: sceneId,
-      duration_sec: sceneSegment.duration_sec,
-      visual_style: visualStyleLock,
-      text_fragment: sceneSegment.text,
-      character_lock: characterLock,
-      background_lock: inheritedBackground,
-      camera: inheritedCamera,
-      foley_and_ambience: previousScenePrompt?.foley_and_ambience || {
-        ambience: ['ambient environment sounds'],
-        fx: ['action sounds'],
-        music: 'Tense dramatic score'
-      },
-      scene_action_summary: `[BLOCKED] ${sceneSegment.action_hint || 'Scene action - requires manual review'}`,
-    };
-
-    console.log(`Scene ${sceneId}: Built locally with [BLOCKED] marker. Background inherited: ${inheritedBackground.setting}`);
-    return blockedPrompt;
+    // ALL RETRIES EXHAUSTED - Use local builder with [BLOCKED] marker
+    // This handles genuinely blocked content (e.g., violent scenes) that Gemini will never generate
+    console.log(`Scene ${sceneId}: All Gemini attempts failed. Using local builder with [BLOCKED] marker.`);
+    return buildLocalScene(
+      sceneId,
+      sceneSegment,
+      presentCharacters,
+      characterIdentities,
+      visualStyleLock,
+      previousScenePrompt,
+      '[BLOCKED]'
+    );
   }, [callGemini]);
 
   // ============================================================================

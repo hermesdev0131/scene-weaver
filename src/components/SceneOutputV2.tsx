@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { FullScenePrompt } from '@/types/prompt';
 import { Button } from '@/components/ui/button';
-import { Copy, Check, Download, Film, Pencil, RefreshCw, ChevronDown, ChevronUp } from 'lucide-react';
+import { Copy, Check, Download, Film, Pencil, RefreshCw, ChevronDown, ChevronUp, AlertTriangle, ShieldAlert } from 'lucide-react';
 import { toast } from 'sonner';
 import { SceneEditDialogV2 } from './SceneEditDialogV2';
 
@@ -122,19 +122,45 @@ export function SceneOutputV2({ prompts, onUpdatePrompt, onRegenerateScene, isRe
           {prompts.map((prompt, index) => {
             const isExpanded = expandedScene === index;
             const characterIds = Object.keys(prompt.character_lock);
+            const isBlocked = prompt.scene_action_summary?.startsWith('[BLOCKED]');
+            const isSanitized = prompt.scene_action_summary?.startsWith('[SANITIZED]');
+            const needsReview = isBlocked || isSanitized;
 
             return (
               <div
                 key={index}
-                className="group bg-card border border-border rounded-lg overflow-hidden hover:border-primary/50 transition-colors"
+                className={`group bg-card border rounded-lg overflow-hidden transition-colors ${
+                  isBlocked
+                    ? 'border-red-500/50 bg-red-500/5 hover:border-red-500'
+                    : isSanitized
+                    ? 'border-amber-500/50 bg-amber-500/5 hover:border-amber-500'
+                    : 'border-border hover:border-primary/50'
+                }`}
               >
                 {/* Header */}
                 <div className="p-4 flex items-start justify-between gap-4">
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-3 mb-2">
-                      <span className="inline-flex items-center justify-center w-10 h-10 rounded-full bg-primary/10 text-primary text-sm font-bold">
+                      <span className={`inline-flex items-center justify-center w-10 h-10 rounded-full text-sm font-bold ${
+                        needsReview
+                          ? 'bg-destructive/10 text-destructive'
+                          : 'bg-primary/10 text-primary'
+                      }`}>
                         {prompt.scene_id}
                       </span>
+                      {/* BLOCKED / SANITIZED Badge */}
+                      {isBlocked && (
+                        <span className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-red-500/10 text-red-500 text-xs font-semibold border border-red-500/20">
+                          <ShieldAlert className="h-3 w-3" />
+                          BLOCKED
+                        </span>
+                      )}
+                      {isSanitized && (
+                        <span className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-amber-500/10 text-amber-500 text-xs font-semibold border border-amber-500/20">
+                          <AlertTriangle className="h-3 w-3" />
+                          SANITIZED
+                        </span>
+                      )}
                       <div className="flex-1">
                         <p className="text-sm font-medium text-foreground">
                           {prompt.background_lock.setting}
@@ -166,8 +192,14 @@ export function SceneOutputV2({ prompts, onUpdatePrompt, onRegenerateScene, isRe
 
                     {/* Action summary preview */}
                     {prompt.scene_action_summary && (
-                      <div className="text-xs text-foreground/80 bg-muted/30 rounded px-2 py-1 mb-2">
-                        ⚡ {prompt.scene_action_summary}
+                      <div className={`text-xs rounded px-2 py-1 mb-2 ${
+                        needsReview
+                          ? 'text-foreground/90 bg-muted/50 font-medium'
+                          : 'text-foreground/80 bg-muted/30'
+                      }`}>
+                        ⚡ {prompt.scene_action_summary
+                          .replace(/^\[BLOCKED\]\s*/, '')
+                          .replace(/^\[SANITIZED\]\s*/, '')}
                       </div>
                     )}
 
